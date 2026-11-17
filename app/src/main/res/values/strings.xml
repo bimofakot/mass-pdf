@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">Mass PDF</string>
+    <string name="open_pdf">Buka PDF</string>
+    <string name="search_hint">Cari teks dalam PDF</string>
+    <string name="search">Cari</string>
+    <string name="previous_page">‹</string>
+    <string name="page_hint">Halaman</string>
+    <string name="go_to_page">Ke</string>
+    <string name="next_page">›</string>
+    <string name="share_pdf">Bagikan PDF</string>
+    <string name="share">Bagikan</string>
+    <string name="recent_documents">Dokumen terbaru</string>
+    <string name="recent_empty">PDF yang dibuka akan muncul di sini.</string>
+    <string name="pdf_open_error">PDF tidak dapat dibuka.</string>
+    <string name="invalid_page">Masukkan nomor halaman dari 1 sampai %1$d.</string>
+    <string name="search_query_required">Masukkan kata atau frasa untuk dicari.</string>
+    <string name="searching">Mencari teks…</string>
+    <string name="search_no_results">Teks tidak ditemukan.</string>
+    <string name="search_page_result">Halaman %1$d</string>
+    <string name="search_results_title">%1$d halaman ditemukan</string>
+    <string name="close">Tutup</string>
+    <string name="search_error">Pencarian gagal membaca PDF.</string>
+    <string name="update_available_title">Versi baru tersedia</string>
+    <string name="update_available_message">Mass PDF %1$s sudah tersedia. Unduh dari GitHub Releases?</string>
+    <string name="download">Unduh</string>
+    <string name="later">Nanti</string>
+</resources>
