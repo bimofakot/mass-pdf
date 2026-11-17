@@ -100,7 +100,7 @@ class MainActivity : Activity() {
         val searchRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         searchField = EditText(this).apply {
             hint = getString(R.string.search_hint)
-            singleLine = true
+            setSingleLine(true)
             imeOptions = EditorInfo.IME_ACTION_SEARCH
         }
         searchRow.addView(searchField, LinearLayout.LayoutParams(0, dp(52), 1f))
@@ -122,7 +122,7 @@ class MainActivity : Activity() {
         pageField = EditText(this).apply {
             hint = getString(R.string.page_hint)
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            singleLine = true
+            setSingleLine(true)
             gravity = Gravity.CENTER
             imeOptions = EditorInfo.IME_ACTION_GO
         }
