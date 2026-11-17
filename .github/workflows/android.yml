@@ -2,6 +2,7 @@ name: Android CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ["v*"]
@@ -19,9 +20,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK 37
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.6.0"
       - name: Build debug APK and run unit tests
         run: gradle assembleDebug testDebugUnitTest
       - uses: actions/upload-artifact@v4
@@ -43,9 +47,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK 37
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.6.0"
       - name: Configure release signing key
         # Keystore dan kredensial hanya diambil dari GitHub Secrets, bukan dari repository.
         env:
@@ -73,8 +80,10 @@ jobs:
           ANDROID_VERSION_NAME: ${{ github.ref_name }}
           ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: gradle assembleRelease
+      - name: Name release APK
+        run: cp app/build/outputs/apk/release/app-release.apk mass-pdf.apk
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: app/build/outputs/apk/release/app-release.apk
+          files: mass-pdf.apk

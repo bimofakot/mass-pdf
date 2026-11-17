@@ -1,395 +1,303 @@
 package com.massbim.pdf
 
-import android.app.Activity
-import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
-import android.view.Gravity
-import android.view.View
-import android.view.inputmethod.EditorInfo
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
-import com.github.barteksc.pdfviewer.PDFView
-import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.text.PDFTextStripper
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
+import androidx.pdf.PdfDocument
+import androidx.pdf.SandboxedPdfLoader
+import com.massbim.pdf.data.DocumentRepository
+import com.massbim.pdf.data.RecentPdf
+import com.massbim.pdf.storage.PdfFileRepository
+import com.massbim.pdf.storage.StoragePermissionManager
+import com.massbim.pdf.ui.MassPdfApp
+import com.massbim.pdf.ui.theme.MassPdfTheme
+import com.massbim.pdf.ui.theme.ThemeMode
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.Executors
 
-class MainActivity : Activity() {
-    // Executor ini menjaga pencarian dan permintaan GitHub berjalan di luar main thread.
-    private val worker = Executors.newSingleThreadExecutor()
-    private val preferences by lazy { getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE) }
+data class UpdatePrompt(val version: String, val downloadUrl: String)
 
-    private lateinit var pdfView: PDFView
-    private lateinit var recentPanel: LinearLayout
-    private lateinit var recentScroll: ScrollView
-    private lateinit var readerControls: LinearLayout
-    private lateinit var pageField: EditText
-    private lateinit var pageCountLabel: TextView
-    private lateinit var searchField: EditText
+class MainActivity : ComponentActivity() {
+    private val documentState = mutableStateOf<PdfDocument?>(null)
+    private val documentUriState = mutableStateOf<Uri?>(null)
+    private val documentTitleState = mutableStateOf<String?>(null)
+    private val loadingState = mutableStateOf(false)
+    private val errorState = mutableStateOf<String?>(null)
+    private val storageAccessState = mutableStateOf(false)
+    private val recentState = mutableStateOf<List<RecentPdf>>(emptyList())
+    private val themeState = mutableStateOf(ThemeMode.SYSTEM)
+    private val updateState = mutableStateOf<UpdatePrompt?>(null)
+    private val storageSettingsErrorState = mutableStateOf(false)
 
-    private var currentUri: Uri? = null
-    private var currentTitle: String? = null
-    private var pageCount = 0
-    private var currentPage = 0
+    private lateinit var documents: DocumentRepository
+    private val files by lazy { PdfFileRepository(applicationContext) }
+    private val loader by lazy {
+        SandboxedPdfLoader(applicationContext, Dispatchers.IO)
+    }
+    private var documentLoadJob: Job? = null
+
+    private val legacyStoragePermissionRequest =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            refreshStoragePermission()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildInterface()
-        renderRecents()
+        documents = DocumentRepository(this)
+        recentState.value = documents.recentDocuments()
+        themeState.value = readThemeMode()
+        refreshStoragePermission()
+
+        setContent {
+            MassPdfTheme(themeState.value) {
+                MassPdfApp(
+                    currentUri = documentUriState.value,
+                    currentTitle = documentTitleState.value,
+                    document = documentState.value,
+                    documentUri = documentUriState.value,
+                    loading = loadingState.value,
+                    errorMessage = errorState.value,
+                    hasStorageAccess = storageAccessState.value,
+                    recentDocuments = recentState.value,
+                    themeMode = themeState.value,
+                    updatePrompt = updateState.value,
+                    storageSettingsError = storageSettingsErrorState.value,
+                    fileRepository = files,
+                    onOpenPdf = ::openPdf,
+                    onCloseReader = ::closeReader,
+                    onSharePdf = ::sharePdf,
+                    onRequestStorageAccess = ::requestStorageAccess,
+                    onPageChanged = { uri, page ->
+                        recentState.value = documents.savePage(uri, page)
+                    },
+                    onTogglePinned = { uri ->
+                        val pinned = documents.find(uri)?.pinned != true
+                        recentState.value = documents.setPinned(uri, pinned)
+                    },
+                    onRemoveRecent = { uri ->
+                        recentState.value = documents.remove(uri)
+                    },
+                    onRenamePdf = { oldFile, newFile ->
+                        val oldUri = providerUri(oldFile)
+                        val newUri = providerUri(newFile)
+                        recentState.value = documents.replaceUri(oldUri, newUri, newFile.name)
+                    },
+                    onDeletePdf = { file ->
+                        recentState.value = documents.remove(providerUri(file))
+                    },
+                    onThemeChanged = ::saveThemeMode,
+                    onDismissUpdate = { updateState.value = null },
+                    onDownloadUpdate = { url -> openExternalUrl(url) },
+                    onDismissStorageSettingsError = {
+                        storageSettingsErrorState.value = false
+                    },
+                )
+            }
+        }
+
+        handleIncomingIntent(intent)
         checkForUpdate()
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshStoragePermission()
+    }
+
     override fun onDestroy() {
-        worker.shutdown()
+        documentLoadJob?.cancel()
+        documentState.value?.close()
+        documentState.value = null
         super.onDestroy()
     }
 
-    override fun onBackPressed() {
-        if (currentUri != null) {
-            showLibrary()
-        } else {
-            super.onBackPressed()
-        }
-    }
+    private fun openPdf(uri: Uri, title: String, persistForLater: Boolean) {
+        documentLoadJob?.cancel()
+        documentUriState.value = uri
+        documentTitleState.value =
+            title.ifBlank { getString(com.massbim.pdf.R.string.file_name_unavailable) }
+        loadingState.value = true
+        errorState.value = null
 
-    private fun buildInterface() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(245, 246, 248))
-            setPadding(dp(16), dp(12), dp(16), dp(8))
-        }
-        // Jaga konten tetap di bawah status bar dan di atas navigation bar pada Android 15+.
-        root.setOnApplyWindowInsetsListener { view, insets ->
-            view.setPadding(
-                dp(16),
-                dp(12) + insets.systemWindowInsetTop,
-                dp(16),
-                dp(8) + insets.systemWindowInsetBottom
-            )
-            insets
-        }
-
-        val heading = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        heading.addView(TextView(this).apply {
-            text = getString(R.string.app_name)
-            textSize = 22f
-            setTextColor(Color.rgb(28, 38, 52))
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, dp(48), 1f))
-        heading.addView(button(getString(R.string.open_pdf)) { choosePdf() })
-        root.addView(heading)
-
-        readerControls = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        val searchRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        searchField = EditText(this).apply {
-            hint = getString(R.string.search_hint)
-            setSingleLine(true)
-            imeOptions = EditorInfo.IME_ACTION_SEARCH
-        }
-        searchRow.addView(searchField, LinearLayout.LayoutParams(0, dp(52), 1f))
-        searchRow.addView(button(getString(R.string.search)) { searchDocument() })
-        searchField.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
-                searchDocument()
-                true
-            } else {
-                false
-            }
-        }
-        readerControls.addView(searchRow)
-
-        val pageRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        pageRow.addView(button(getString(R.string.previous_page)) {
-            if (currentPage > 0) pdfView.jumpTo(currentPage - 1, true)
-        })
-        pageField = EditText(this).apply {
-            hint = getString(R.string.page_hint)
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setSingleLine(true)
-            gravity = Gravity.CENTER
-            imeOptions = EditorInfo.IME_ACTION_GO
-        }
-        pageRow.addView(pageField, LinearLayout.LayoutParams(dp(84), dp(48)))
-        pageCountLabel = TextView(this).apply {
-            textSize = 14f
-            setPadding(dp(8), 0, dp(8), 0)
-        }
-        pageRow.addView(pageCountLabel, LinearLayout.LayoutParams(0, dp(48), 1f))
-        pageRow.addView(button(getString(R.string.go_to_page)) { goToEnteredPage() })
-        pageRow.addView(button(getString(R.string.next_page)) {
-            if (pageCount > 0 && currentPage < pageCount - 1) {
-                pdfView.jumpTo(currentPage + 1, true)
-            }
-        })
-        readerControls.addView(pageRow)
-        pageField.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_GO) {
-                goToEnteredPage()
-                true
-            } else {
-                false
-            }
-        }
-        readerControls.addView(button(getString(R.string.share_pdf)) {
-            val uri = currentUri
-            if (uri != null) shareDocument(uri, currentTitle ?: "PDF")
-        })
-        root.addView(readerControls)
-
-        pdfView = PDFView(this, null).apply {
-            setBackgroundColor(Color.rgb(224, 228, 234))
-            visibility = View.GONE
-        }
-        root.addView(pdfView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        ))
-
-        recentPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        recentScroll = ScrollView(this).apply { addView(recentPanel) }
-        root.addView(recentScroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        ))
-        setContentView(root)
-    }
-
-    private fun button(label: String, onClick: () -> Unit): Button =
-        Button(this).apply {
-            text = label
-            setOnClickListener { onClick() }
-        }
-
-    private fun choosePdf() {
-        // Pemilih sistem memberi akses hanya pada PDF yang dipilih pengguna.
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/pdf"
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }
-        startActivityForResult(intent, REQUEST_OPEN_PDF)
-    }
-
-    @Deprecated("Gunakan Activity Result API saat memindahkan pemilih file.")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_OPEN_PDF || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or
-            Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        try {
-            contentResolver.takePersistableUriPermission(uri, flags)
-        } catch (error: SecurityException) {
-            Log.i(TAG, "Penyedia PDF tidak mendukung izin akses yang persisten", error)
-        }
-        openDocument(uri)
-    }
-
-    private fun openDocument(uri: Uri) {
-        val title = queryDisplayName(uri) ?: uri.lastPathSegment ?: "PDF"
-        currentUri = uri
-        currentTitle = title
-        saveRecent(uri, title)
-        readerControls.visibility = View.VISIBLE
-        pdfView.visibility = View.VISIBLE
-        recentScroll.visibility = View.GONE
-        // Callback ini menjaga indikator halaman tetap sinkron dan menangani kegagalan render.
-        pdfView.fromUri(uri)
-            .defaultPage(0)
-            .enableSwipe(true)
-            .swipeHorizontal(false)
-            .enableDoubletap(true)
-            .onLoad { count ->
-                pageCount = count
-                pageCountLabel.text = "/ $count"
-                pageField.setText("1")
-            }
-            .onPageChange { page, count ->
-                currentPage = page
-                pageCount = count
-                pageCountLabel.text = "/ $count"
-                pageField.setText((page + 1).toString())
-            }
-            .onError { error ->
-                Log.e(TAG, "PDF tidak dapat ditampilkan: $title", error)
-                Toast.makeText(this, R.string.pdf_open_error, Toast.LENGTH_LONG).show()
-                showLibrary()
-            }
-            .load()
-    }
-
-    private fun goToEnteredPage() {
-        val requestedPage = pageField.text.toString().toIntOrNull()
-        if (requestedPage == null || requestedPage !in 1..pageCount) {
-            Toast.makeText(
-                this,
-                getString(R.string.invalid_page, pageCount),
-                Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        pdfView.jumpTo(requestedPage - 1, true)
-    }
-
-    private fun searchDocument() {
-        val query = searchField.text.toString().trim()
-        val uri = currentUri
-        if (query.isEmpty() || uri == null) {
-            Toast.makeText(this, R.string.search_query_required, Toast.LENGTH_SHORT).show()
-            return
-        }
-        Toast.makeText(this, R.string.searching, Toast.LENGTH_SHORT).show()
-        worker.execute {
-            try {
-                val matches = findMatchingPages(uri, query)
-                runOnUiThread {
-                    if (matches.isEmpty()) {
-                        Toast.makeText(this, R.string.search_no_results, Toast.LENGTH_SHORT).show()
-                    } else {
-                        val pages = matches.map { getString(R.string.search_page_result, it) }.toTypedArray()
-                        AlertDialog.Builder(this)
-                            .setTitle(getString(R.string.search_results_title, matches.size))
-                            .setItems(pages) { _, index -> pdfView.jumpTo(matches[index] - 1, true) }
-                            .setNegativeButton(R.string.close, null)
-                            .show()
-                    }
-                }
+        val savedPage = documents.find(uri)?.lastPage ?: 0
+        documentLoadJob = lifecycleScope.launch {
+            val opened = try {
+                loader.openDocument(uri)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
-                Log.e(TAG, "Pencarian teks PDF gagal", error)
-                runOnUiThread {
-                    Toast.makeText(this, R.string.search_error, Toast.LENGTH_LONG).show()
-                }
+                Log.e(TAG, "PDF tidak dapat dibuka: $uri", error)
+                null
+            }
+
+            if (documentUriState.value != uri) {
+                opened?.close()
+                return@launch
+            }
+            loadingState.value = false
+            if (opened == null) {
+                errorState.value = getString(com.massbim.pdf.R.string.open_pdf_error)
+                documentState.value?.close()
+                documentState.value = null
+                return@launch
+            }
+
+            documentState.value?.close()
+            documentState.value = opened
+            errorState.value = null
+            if (persistForLater) {
+                recentState.value = documents.recordOpened(uri, documentTitleState.value.orEmpty())
+                recentState.value = documents.savePage(uri, savedPage)
             }
         }
     }
 
-    private fun findMatchingPages(uri: Uri, query: String): List<Int> {
-        val input = contentResolver.openInputStream(uri)
-            ?: throw IOException("PDF yang dipilih tidak dapat dibuka")
-        input.use { stream ->
-            PDDocument.load(stream).use { document ->
-                val stripper = PDFTextStripper()
-                val matches = mutableListOf<Int>()
-                // Teks diekstrak lokal per halaman; PDF tidak dikirim ke layanan mana pun.
-                for (page in 1..document.numberOfPages) {
-                    stripper.startPage = page
-                    stripper.endPage = page
-                    if (stripper.getText(document).contains(query, ignoreCase = true)) {
-                        matches.add(page)
-                    }
-                }
-                return matches
-            }
-        }
+    private fun closeReader() {
+        documentLoadJob?.cancel()
+        documentState.value?.close()
+        documentState.value = null
+        documentUriState.value = null
+        documentTitleState.value = null
+        loadingState.value = false
+        errorState.value = null
     }
 
-    private fun showLibrary() {
-        currentUri = null
-        currentTitle = null
-        pdfView.recycle()
-        pdfView.visibility = View.GONE
-        readerControls.visibility = View.GONE
-        recentScroll.visibility = View.VISIBLE
-        renderRecents()
-    }
-
-    private fun renderRecents() {
-        recentPanel.removeAllViews()
-        recentPanel.addView(TextView(this).apply {
-            text = getString(R.string.recent_documents)
-            textSize = 18f
-            setTextColor(Color.rgb(28, 38, 52))
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, dp(12), 0, dp(8))
-        })
-        val entries = readRecents()
-        if (entries.isEmpty()) {
-            recentPanel.addView(TextView(this).apply {
-                text = getString(R.string.recent_empty)
-                textSize = 15f
-                setTextColor(Color.DKGRAY)
-                setPadding(0, dp(8), 0, dp(8))
-            })
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        val title = queryDisplayName(uri) ?: uri.lastPathSegment
+            ?: getString(com.massbim.pdf.R.string.file_name_unavailable)
+        val mimeType = intent.type ?: contentResolver.getType(uri)
+        if (!mimeType.equals("application/pdf", ignoreCase = true) &&
+            !title.endsWith(".pdf", ignoreCase = true)
+        ) {
+            errorState.value = getString(com.massbim.pdf.R.string.open_pdf_error)
             return
         }
-        entries.forEach { entry ->
-            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-            row.addView(button(entry.second) { openDocument(entry.first) },
-                LinearLayout.LayoutParams(0, dp(56), 1f))
-            row.addView(button(getString(R.string.share)) {
-                shareDocument(entry.first, entry.second)
-            })
-            recentPanel.addView(row)
-        }
+
+        val hasPersistableGrant = takePersistableReadPermission(uri, intent.flags)
+        val isOwnProviderUri = uri.authority == "$packageName.fileprovider"
+        openPdf(uri, title, hasPersistableGrant || isOwnProviderUri)
     }
 
-    private fun saveRecent(uri: Uri, title: String) {
-        // Daftar disimpan sebagai URI agar dokumen tetap bisa dibuka tanpa menyalin file.
-        val updated = (listOf(uri to title) +
-            readRecents().filterNot { it.first == uri }).take(MAX_RECENTS)
-        val json = JSONArray()
-        updated.forEach { (savedUri, savedTitle) ->
-            json.put(JSONObject().put("uri", savedUri.toString()).put("title", savedTitle))
+    private fun takePersistableReadPermission(uri: Uri, flags: Int): Boolean {
+        val readFlag = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+        if (readFlag == 0) return isPersistedReadPermission(uri)
+        if (flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION == 0) {
+            return isPersistedReadPermission(uri)
         }
-        preferences.edit().putString(RECENTS_KEY, json.toString()).apply()
-        renderRecents()
-    }
-
-    private fun readRecents(): List<Pair<Uri, String>> {
-        val json = preferences.getString(RECENTS_KEY, null) ?: return emptyList()
         return try {
-            val array = JSONArray(json)
-            (0 until array.length()).mapNotNull { index ->
-                val entry = array.getJSONObject(index)
-                Uri.parse(entry.getString("uri")) to entry.getString("title")
-            }
-        } catch (error: Exception) {
-            Log.w(TAG, "Daftar dokumen terbaru tidak dapat dibaca", error)
-            emptyList()
+            contentResolver.takePersistableUriPermission(uri, readFlag)
+            true
+        } catch (error: SecurityException) {
+            Log.i(TAG, "Akses dokumen tidak dapat disimpan untuk pembukaan berikutnya", error)
+            false
         }
     }
 
-    private fun queryDisplayName(uri: Uri): String? {
-        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
-            null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                return cursor.getString(0)
-            }
+    private fun isPersistedReadPermission(uri: Uri): Boolean =
+        contentResolver.persistedUriPermissions.any {
+            it.uri == uri && it.isReadPermission
         }
-        return null
-    }
 
-    private fun shareDocument(uri: Uri, title: String) {
-        // Grant read permission diperlukan agar aplikasi penerima dapat membaca URI dokumen.
+    private fun sharePdf(uri: Uri, title: String) {
+        val shareUri = if (uri.scheme == "file") {
+            val path = uri.path ?: return
+            providerUri(File(path))
+        } else {
+            uri
+        }
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = android.content.ClipData.newUri(contentResolver, title, uri)
+            putExtra(Intent.EXTRA_STREAM, shareUri)
+            clipData = android.content.ClipData.newUri(contentResolver, title, shareUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(sendIntent, getString(R.string.share_pdf)))
+        startActivity(
+            Intent.createChooser(sendIntent, getString(com.massbim.pdf.R.string.share_pdf))
+        )
     }
 
+    private fun providerUri(file: File): Uri =
+        FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+
+    private fun requestStorageAccess() {
+        storageSettingsErrorState.value = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val appSettings = Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:$packageName"),
+            )
+            try {
+                startActivity(appSettings)
+            } catch (error: ActivityNotFoundException) {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (fallbackError: ActivityNotFoundException) {
+                    Log.e(TAG, "Pengaturan akses seluruh file tidak tersedia", fallbackError)
+                    storageSettingsErrorState.value = true
+                }
+            }
+        } else {
+            legacyStoragePermissionRequest.launch(StoragePermissionManager.legacyPermissions())
+        }
+    }
+
+    private fun refreshStoragePermission() {
+        storageAccessState.value = StoragePermissionManager.hasAccess(this)
+    }
+
+    private fun saveThemeMode(mode: ThemeMode) {
+        themeState.value = mode
+        getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(THEME_KEY, mode.name)
+            .apply()
+    }
+
+    private fun readThemeMode(): ThemeMode {
+        val name = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            .getString(THEME_KEY, ThemeMode.SYSTEM.name)
+        return runCatching { ThemeMode.valueOf(name ?: ThemeMode.SYSTEM.name) }
+            .getOrDefault(ThemeMode.SYSTEM)
+    }
+
+    private fun queryDisplayName(uri: Uri): String? =
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Nama dokumen tidak dapat dibaca", error)
+            null
+        }
+
     private fun checkForUpdate() {
-        // Pemeriksaan gagal secara non-blocking saat offline; dicoba kembali pada peluncuran berikutnya.
-        worker.execute {
+        lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val connection = URL(RELEASES_API).openConnection() as HttpURLConnection
                 connection.connectTimeout = NETWORK_TIMEOUT_MS
@@ -401,48 +309,40 @@ class MainActivity : Activity() {
                 } finally {
                     connection.disconnect()
                 }
-
-                val tag = release.optString("tag_name")
-                if (!ReleaseVersion.isNewer(tag, BuildConfig.VERSION_NAME)) return@execute
+                val version = release.optString("tag_name")
+                if (!ReleaseVersion.isNewer(version, BuildConfig.VERSION_NAME)) return@launch
                 val assets = release.optJSONArray("assets") ?: JSONArray()
                 val apkUrl = (0 until assets.length())
                     .map { assets.getJSONObject(it) }
-                    .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
+                    .firstOrNull { it.optString("name").equals("mass-pdf.apk", ignoreCase = true) }
                     ?.optString("browser_download_url")
-                    ?.takeIf { it.isNotBlank() }
+                    ?.takeIf(String::isNotBlank)
                     ?: release.optString("html_url")
-                runOnUiThread { showUpdatePrompt(tag, apkUrl) }
+                withContext(Dispatchers.Main) {
+                    updateState.value = UpdatePrompt(version, apkUrl)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 Log.i(TAG, "Pemeriksaan update GitHub tidak tersedia", error)
             }
         }
     }
 
-    private fun showUpdatePrompt(version: String, downloadUrl: String) {
-        if (isFinishing || isDestroyed) return
-        // Penolakan tidak disimpan supaya ajakan muncul lagi saat aplikasi dibuka berikutnya.
-        AlertDialog.Builder(this)
-            .setTitle(R.string.update_available_title)
-            .setMessage(getString(R.string.update_available_message, version))
-            .setPositiveButton(R.string.download) { _, _ ->
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
-            }
-            .setNegativeButton(R.string.later, null)
-            .show()
+    private fun openExternalUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (error: ActivityNotFoundException) {
+            Log.e(TAG, "Tidak ada aplikasi untuk membuka tautan unduhan", error)
+        }
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private companion object {
+        const val TAG = "MassPDF"
+        const val PREFERENCES_NAME = "mass_pdf_preferences"
+        const val THEME_KEY = "theme_mode"
+        const val NETWORK_TIMEOUT_MS = 5_000
+        const val RELEASES_API = "https://api.github.com/repos/bimofakot/mass-pdf/releases/latest"
 
-    companion object {
-        private const val TAG = "MassPDF"
-        private const val PREFERENCES_NAME = "mass_pdf_preferences"
-        private const val RECENTS_KEY = "recent_documents"
-        // Ubah nilai ini untuk mengatur banyaknya dokumen yang disimpan di daftar terbaru.
-        private const val MAX_RECENTS = 10
-        private const val REQUEST_OPEN_PDF = 1001
-        private const val NETWORK_TIMEOUT_MS = 5_000
-        // Ganti alamat ini jika nama repository GitHub aplikasi berubah.
-        private const val RELEASES_API =
-            "https://api.github.com/repos/bimofakot/mass-pdf/releases/latest"
     }
 }
