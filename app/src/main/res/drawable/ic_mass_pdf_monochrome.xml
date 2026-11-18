@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ikon monokrom Android 13+ untuk themed icon; sistem yang memberi warna. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group
+        android:pivotX="512"
+        android:pivotY="512"
+        android:scaleX="0.88"
+        android:scaleY="0.88">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M290,800 V470 H390 L535,670 L680,470 H780 V800 H680 V570 L535,770 L390,570 V800 Z M321,596 h38 a9,9 0 0 1 0,18 h-38 a9,9 0 0 1 0,-18 z M321,640 h38 a9,9 0 0 1 0,18 h-38 a9,9 0 0 1 0,-18 z M321,684 h38 a9,9 0 0 1 0,18 h-38 a9,9 0 0 1 0,-18 z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M345,140 H455 V380 L400,331 L345,380 Z" />
+    </group>
+</vector>

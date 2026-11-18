@@ -18,9 +18,11 @@ import androidx.pdf.SandboxedPdfLoader
 import com.massbim.pdf.data.DocumentRepository
 import com.massbim.pdf.data.RecentPdf
 import com.massbim.pdf.storage.PdfFileRepository
+import com.massbim.pdf.storage.PdfFileSort
 import com.massbim.pdf.storage.StoragePermissionManager
 import com.massbim.pdf.ui.MassPdfApp
 import com.massbim.pdf.ui.theme.MassPdfTheme
+import com.massbim.pdf.ui.theme.TextSizeMode
 import com.massbim.pdf.ui.theme.ThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -30,10 +32,18 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
 data class UpdatePrompt(val version: String, val downloadUrl: String)
+
+data class UpdateCheckState(
+    val checking: Boolean = false,
+    val upToDate: Boolean = false,
+    val failed: Boolean = false,
+    val availableVersion: String? = null,
+)
 
 class MainActivity : ComponentActivity() {
     private val documentState = mutableStateOf<PdfDocument?>(null)
@@ -44,7 +54,10 @@ class MainActivity : ComponentActivity() {
     private val storageAccessState = mutableStateOf(false)
     private val recentState = mutableStateOf<List<RecentPdf>>(emptyList())
     private val themeState = mutableStateOf(ThemeMode.SYSTEM)
+    private val textSizeState = mutableStateOf(TextSizeMode.SYSTEM)
+    private val fileSortState = mutableStateOf(PdfFileSort.NAME_ASC)
     private val updateState = mutableStateOf<UpdatePrompt?>(null)
+    private val updateCheckState = mutableStateOf(UpdateCheckState())
     private val storageSettingsErrorState = mutableStateOf(false)
 
     private lateinit var documents: DocumentRepository
@@ -63,11 +76,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         documents = DocumentRepository(this)
         recentState.value = documents.recentDocuments()
-        themeState.value = readThemeMode()
+        themeState.value = readEnum(THEME_KEY, ThemeMode.SYSTEM)
+        textSizeState.value = readEnum(TEXT_SIZE_KEY, TextSizeMode.SYSTEM)
+        fileSortState.value = readEnum(FILE_SORT_KEY, PdfFileSort.NAME_ASC)
         refreshStoragePermission()
 
         setContent {
-            MassPdfTheme(themeState.value) {
+            MassPdfTheme(themeState.value, textSizeState.value) {
                 MassPdfApp(
                     currentUri = documentUriState.value,
                     currentTitle = documentTitleState.value,
@@ -78,7 +93,10 @@ class MainActivity : ComponentActivity() {
                     hasStorageAccess = storageAccessState.value,
                     recentDocuments = recentState.value,
                     themeMode = themeState.value,
+                    textSize = textSizeState.value,
+                    fileSort = fileSortState.value,
                     updatePrompt = updateState.value,
+                    updateCheck = updateCheckState.value,
                     storageSettingsError = storageSettingsErrorState.value,
                     fileRepository = files,
                     onOpenPdf = ::openPdf,
@@ -103,7 +121,19 @@ class MainActivity : ComponentActivity() {
                     onDeletePdf = { file ->
                         recentState.value = documents.remove(providerUri(file))
                     },
-                    onThemeChanged = ::saveThemeMode,
+                    onThemeChanged = { mode ->
+                        themeState.value = mode
+                        saveEnum(THEME_KEY, mode)
+                    },
+                    onTextSizeChanged = { mode ->
+                        textSizeState.value = mode
+                        saveEnum(TEXT_SIZE_KEY, mode)
+                    },
+                    onFileSortChanged = { sort ->
+                        fileSortState.value = sort
+                        saveEnum(FILE_SORT_KEY, sort)
+                    },
+                    onCheckUpdate = { checkForUpdate(notifyResult = true) },
                     onDismissUpdate = { updateState.value = null },
                     onDownloadUpdate = { url -> openExternalUrl(url) },
                     onDismissStorageSettingsError = {
@@ -265,19 +295,17 @@ class MainActivity : ComponentActivity() {
         storageAccessState.value = StoragePermissionManager.hasAccess(this)
     }
 
-    private fun saveThemeMode(mode: ThemeMode) {
-        themeState.value = mode
+    private fun saveEnum(key: String, value: Enum<*>) {
         getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
             .edit()
-            .putString(THEME_KEY, mode.name)
+            .putString(key, value.name)
             .apply()
     }
 
-    private fun readThemeMode(): ThemeMode {
+    private inline fun <reified T : Enum<T>> readEnum(key: String, default: T): T {
         val name = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
-            .getString(THEME_KEY, ThemeMode.SYSTEM.name)
-        return runCatching { ThemeMode.valueOf(name ?: ThemeMode.SYSTEM.name) }
-            .getOrDefault(ThemeMode.SYSTEM)
+            .getString(key, default.name)
+        return name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
     }
 
     private fun queryDisplayName(uri: Uri): String? =
@@ -296,7 +324,9 @@ class MainActivity : ComponentActivity() {
             null
         }
 
-    private fun checkForUpdate() {
+    private fun checkForUpdate(notifyResult: Boolean = false) {
+        if (updateCheckState.value.checking) return
+        updateCheckState.value = UpdateCheckState(checking = true)
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val connection = URL(RELEASES_API).openConnection() as HttpURLConnection
@@ -305,26 +335,45 @@ class MainActivity : ComponentActivity() {
                 connection.setRequestProperty("Accept", "application/vnd.github+json")
                 connection.setRequestProperty("User-Agent", "Mass-PDF-Android")
                 val release = try {
-                    connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+                    // 404 berarti repo belum punya rilis: setara "tidak ada versi baru".
+                    when (connection.responseCode) {
+                        HttpURLConnection.HTTP_OK ->
+                            connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+                        HttpURLConnection.HTTP_NOT_FOUND -> null
+                        else -> throw IOException("GitHub API ${connection.responseCode}")
+                    }
                 } finally {
                     connection.disconnect()
                 }
-                val version = release.optString("tag_name")
-                if (!ReleaseVersion.isNewer(version, BuildConfig.VERSION_NAME)) return@launch
-                val assets = release.optJSONArray("assets") ?: JSONArray()
-                val apkUrl = (0 until assets.length())
-                    .map { assets.getJSONObject(it) }
-                    .firstOrNull { it.optString("name").equals("mass-pdf.apk", ignoreCase = true) }
-                    ?.optString("browser_download_url")
-                    ?.takeIf(String::isNotBlank)
-                    ?: release.optString("html_url")
+                val version = release?.optString("tag_name").orEmpty()
+                val isNewer = ReleaseVersion.isNewer(version, BuildConfig.VERSION_NAME)
+                val prompt = if (release == null || !isNewer) {
+                    null
+                } else {
+                    val assets = release.optJSONArray("assets") ?: JSONArray()
+                    val apkUrl = (0 until assets.length())
+                        .map { assets.getJSONObject(it) }
+                        .firstOrNull { it.optString("name").equals("mass-pdf.apk", ignoreCase = true) }
+                        ?.optString("browser_download_url")
+                        ?.takeIf(String::isNotBlank)
+                        ?: release.optString("html_url")
+                    UpdatePrompt(version, apkUrl)
+                }
                 withContext(Dispatchers.Main) {
-                    updateState.value = UpdatePrompt(version, apkUrl)
+                    updateCheckState.value = if (prompt == null) {
+                        UpdateCheckState(upToDate = true)
+                    } else {
+                        UpdateCheckState(availableVersion = prompt.version.removePrefix("v"))
+                    }
+                    if (prompt != null) updateState.value = prompt
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 Log.i(TAG, "Pemeriksaan update GitHub tidak tersedia", error)
+                withContext(Dispatchers.Main) {
+                    updateCheckState.value = UpdateCheckState(failed = notifyResult)
+                }
             }
         }
     }
@@ -341,6 +390,8 @@ class MainActivity : ComponentActivity() {
         const val TAG = "MassPDF"
         const val PREFERENCES_NAME = "mass_pdf_preferences"
         const val THEME_KEY = "theme_mode"
+        const val TEXT_SIZE_KEY = "text_size_mode"
+        const val FILE_SORT_KEY = "file_sort"
         const val NETWORK_TIMEOUT_MS = 5_000
         const val RELEASES_API = "https://api.github.com/repos/bimofakot/mass-pdf/releases/latest"
 
