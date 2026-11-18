@@ -3,22 +3,31 @@ package com.massbim.pdf.ui
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.scaleIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,13 +47,20 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
@@ -59,6 +75,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -82,24 +99,32 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.FileProvider
 import androidx.pdf.ExperimentalPdfApi
 import androidx.pdf.PdfDocument
 import androidx.pdf.SandboxedPdfLoader
 import androidx.pdf.compose.PdfViewer
 import androidx.pdf.compose.PdfViewerState
+import com.massbim.pdf.BuildConfig
 import com.massbim.pdf.R
+import com.massbim.pdf.UpdateCheckState
 import com.massbim.pdf.UpdatePrompt
 import com.massbim.pdf.data.RecentPdf
 import com.massbim.pdf.storage.PdfFileRepository
+import com.massbim.pdf.storage.PdfFileSort
 import com.massbim.pdf.storage.PdfStorageEntry
 import com.massbim.pdf.storage.PdfStorageRoot
+import com.massbim.pdf.ui.theme.TextSizeMode
 import com.massbim.pdf.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -114,6 +139,18 @@ private enum class HomeTab {
     SETTINGS,
 }
 
+private enum class FileKindFilter {
+    ALL,
+    PDF,
+    FOLDER,
+}
+
+private enum class SettingsPage {
+    ROOT,
+    SUPPORT,
+    CHANGELOG,
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MassPdfApp(
@@ -126,7 +163,10 @@ fun MassPdfApp(
     hasStorageAccess: Boolean,
     recentDocuments: List<RecentPdf>,
     themeMode: ThemeMode,
+    textSize: TextSizeMode,
+    fileSort: PdfFileSort,
     updatePrompt: UpdatePrompt?,
+    updateCheck: UpdateCheckState,
     storageSettingsError: Boolean,
     fileRepository: PdfFileRepository,
     onOpenPdf: (Uri, String, Boolean) -> Unit,
@@ -139,12 +179,33 @@ fun MassPdfApp(
     onRenamePdf: (File, File) -> Unit,
     onDeletePdf: (File) -> Unit,
     onThemeChanged: (ThemeMode) -> Unit,
+    onTextSizeChanged: (TextSizeMode) -> Unit,
+    onFileSortChanged: (PdfFileSort) -> Unit,
+    onCheckUpdate: () -> Unit,
     onDismissUpdate: () -> Unit,
     onDownloadUpdate: (String) -> Unit,
     onDismissStorageSettingsError: () -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.LIBRARY.name) }
+    var settingsPageName by rememberSaveable { mutableStateOf(SettingsPage.ROOT.name) }
+    var fileFolderPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var fileFilterName by rememberSaveable { mutableStateOf(FileKindFilter.ALL.name) }
+    var fileSearchQuery by rememberSaveable { mutableStateOf("") }
+    var fileSearchActive by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
+
+    val selected = HomeTab.valueOf(selectedTab)
+    val settingsPage = SettingsPage.valueOf(settingsPageName)
+    val fileFilter = FileKindFilter.valueOf(fileFilterName)
+    val canSearchFiles = hasStorageAccess &&
+        (fileFolderPath != null || fileFilter == FileKindFilter.PDF)
+
+    fun navigateFolder(path: String?) {
+        fileFolderPath = path
+        fileFilterName = FileKindFilter.ALL.name
+        fileSearchQuery = ""
+        fileSearchActive = false
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -158,6 +219,22 @@ fun MassPdfApp(
                 false
             }
             onOpenPdf(uri, displayName(context, uri), persistable)
+        }
+    }
+
+    BackHandler(enabled = currentUri != null) {
+        onCloseReader()
+    }
+    BackHandler(
+        enabled = currentUri == null && (
+            (selected == HomeTab.SETTINGS && settingsPage != SettingsPage.ROOT) ||
+                selected != HomeTab.LIBRARY
+            ),
+    ) {
+        when {
+            selected == HomeTab.SETTINGS && settingsPage != SettingsPage.ROOT ->
+                settingsPageName = SettingsPage.ROOT.name
+            selected != HomeTab.LIBRARY -> selectedTab = HomeTab.LIBRARY.name
         }
     }
 
@@ -178,15 +255,66 @@ fun MassPdfApp(
             contentWindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp),
             topBar = {
                 CenterAlignedTopAppBar(
+                    navigationIcon = {
+                        if (selected == HomeTab.SETTINGS && settingsPage != SettingsPage.ROOT) {
+                            IconButton(onClick = { settingsPageName = SettingsPage.ROOT.name }) {
+                                Icon(
+                                    Icons.Filled.ArrowBack,
+                                    contentDescription = stringResource(R.string.back),
+                                )
+                            }
+                        }
+                    },
                     title = {
-                        Text(
-                            when (HomeTab.valueOf(selectedTab)) {
-                                HomeTab.LIBRARY -> stringResource(R.string.app_name)
-                                HomeTab.FILES -> stringResource(R.string.browse_files)
-                                HomeTab.SETTINGS -> stringResource(R.string.settings)
-                            },
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        if (selected == HomeTab.FILES && fileSearchActive) {
+                            OutlinedTextField(
+                                value = fileSearchQuery,
+                                onValueChange = { fileSearchQuery = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = { Text(stringResource(R.string.search_folder_hint)) },
+                                singleLine = true,
+                                shape = RoundedCornerShape(18.dp),
+                                textStyle = MaterialTheme.typography.bodyLarge,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = {
+                                            fileSearchActive = false
+                                            fileSearchQuery = ""
+                                        },
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = stringResource(R.string.close_search),
+                                        )
+                                    }
+                                },
+                            )
+                        } else {
+                            Text(
+                                when {
+                                    selected == HomeTab.LIBRARY -> stringResource(R.string.app_name)
+                                    selected == HomeTab.FILES -> stringResource(R.string.browse_files)
+                                    settingsPage == SettingsPage.SUPPORT ->
+                                        stringResource(R.string.support_title)
+                                    settingsPage == SettingsPage.CHANGELOG ->
+                                        stringResource(R.string.version_history)
+                                    else -> stringResource(R.string.settings)
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
+                        }
+                    },
+                    actions = {
+                        if (selected == HomeTab.FILES && !fileSearchActive && canSearchFiles) {
+                            IconButton(onClick = { fileSearchActive = true }) {
+                                Icon(
+                                    Icons.Filled.Search,
+                                    contentDescription = stringResource(R.string.search),
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
@@ -196,27 +324,33 @@ fun MassPdfApp(
             bottomBar = {
                 NavigationBar {
                     NavigationBarItem(
-                        selected = selectedTab == HomeTab.LIBRARY.name,
+                        selected = selected == HomeTab.LIBRARY,
                         onClick = { selectedTab = HomeTab.LIBRARY.name },
                         icon = { Icon(Icons.Filled.PictureAsPdf, contentDescription = null) },
                         label = { Text(stringResource(R.string.library)) },
                     )
                     NavigationBarItem(
-                        selected = selectedTab == HomeTab.FILES.name,
-                        onClick = { selectedTab = HomeTab.FILES.name },
+                        selected = selected == HomeTab.FILES,
+                        onClick = {
+                            if (selected == HomeTab.FILES) navigateFolder(null)
+                            selectedTab = HomeTab.FILES.name
+                        },
                         icon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
                         label = { Text(stringResource(R.string.browse_files)) },
                     )
                     NavigationBarItem(
-                        selected = selectedTab == HomeTab.SETTINGS.name,
-                        onClick = { selectedTab = HomeTab.SETTINGS.name },
+                        selected = selected == HomeTab.SETTINGS,
+                        onClick = {
+                            settingsPageName = SettingsPage.ROOT.name
+                            selectedTab = HomeTab.SETTINGS.name
+                        },
                         icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                         label = { Text(stringResource(R.string.settings)) },
                     )
                 }
             },
         ) { padding ->
-            when (HomeTab.valueOf(selectedTab)) {
+            when (selected) {
                 HomeTab.LIBRARY -> LibraryScreen(
                     modifier = Modifier.padding(padding),
                     recentDocuments = recentDocuments,
@@ -232,6 +366,13 @@ fun MassPdfApp(
                     modifier = Modifier.padding(padding),
                     hasStorageAccess = hasStorageAccess,
                     fileRepository = fileRepository,
+                    currentFolderPath = fileFolderPath,
+                    onFolderChanged = ::navigateFolder,
+                    filter = fileFilter,
+                    onFilterChanged = { fileFilterName = it.name },
+                    searchQuery = fileSearchQuery,
+                    sort = fileSort,
+                    onSortChanged = onFileSortChanged,
                     onRequestStorageAccess = onRequestStorageAccess,
                     onOpenPdf = { file ->
                         val uri = FileProvider.getUriForFile(
@@ -246,31 +387,30 @@ fun MassPdfApp(
                 )
                 HomeTab.SETTINGS -> SettingsScreen(
                     modifier = Modifier.padding(padding),
+                    page = settingsPage,
                     themeMode = themeMode,
+                    textSize = textSize,
+                    hasStorageAccess = hasStorageAccess,
+                    updateCheck = updateCheck,
+                    appVersion = BuildConfig.VERSION_NAME,
                     onThemeChanged = onThemeChanged,
+                    onTextSizeChanged = onTextSizeChanged,
+                    onCheckUpdate = onCheckUpdate,
+                    onRequestStorageAccess = onRequestStorageAccess,
+                    onOpenSupport = { settingsPageName = SettingsPage.SUPPORT.name },
+                    onOpenChangelog = { settingsPageName = SettingsPage.CHANGELOG.name },
                 )
             }
         }
     }
 
     if (updatePrompt != null) {
-        AlertDialog(
-            onDismissRequest = onDismissUpdate,
-            icon = { Icon(Icons.Filled.Description, contentDescription = null) },
-            title = { Text(stringResource(R.string.update_available_title)) },
-            text = { Text(stringResource(R.string.update_available_message, updatePrompt.version)) },
-            confirmButton = {
-                Button(onClick = {
-                    onDismissUpdate()
-                    onDownloadUpdate(updatePrompt.downloadUrl)
-                }) {
-                    Text(stringResource(R.string.download))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissUpdate) {
-                    Text(stringResource(R.string.later))
-                }
+        UpdateAvailableDialog(
+            version = updatePrompt.version.removePrefix("v"),
+            onDismiss = onDismissUpdate,
+            onDownload = {
+                onDismissUpdate()
+                onDownloadUpdate(updatePrompt.downloadUrl)
             },
         )
     }
@@ -286,6 +426,82 @@ fun MassPdfApp(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    version: String,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+    Dialog(onDismissRequest = onDismiss) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn() + scaleIn(initialScale = 0.92f),
+        ) {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(58.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Filled.SystemUpdate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        stringResource(R.string.update_available_title),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ) {
+                        Text(
+                            stringResource(R.string.app_version_label, version),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Text(
+                        stringResource(R.string.update_available_message, version),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Button(
+                        onClick = onDownload,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                    ) {
+                        Text(stringResource(R.string.download_update))
+                    }
+                    TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.later))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -514,57 +730,111 @@ private fun RecentDocumentCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PdfFileBrowserScreen(
     modifier: Modifier,
     hasStorageAccess: Boolean,
     fileRepository: PdfFileRepository,
+    currentFolderPath: String?,
+    onFolderChanged: (String?) -> Unit,
+    filter: FileKindFilter,
+    onFilterChanged: (FileKindFilter) -> Unit,
+    searchQuery: String,
+    sort: PdfFileSort,
+    onSortChanged: (PdfFileSort) -> Unit,
     onRequestStorageAccess: () -> Unit,
     onOpenPdf: (File) -> Unit,
     onRenamePdf: (File, File) -> Unit,
     onDeletePdf: (File) -> Unit,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val currentFolder = currentFolderPath?.let(::File)
+    val atRoot = currentFolder == null
+    val folderOpenError = stringResource(R.string.folder_open_error)
     var permissionRationale by remember { mutableStateOf(false) }
-    var currentFolder by remember { mutableStateOf<File?>(null) }
     var roots by remember { mutableStateOf<List<PdfStorageRoot>>(emptyList()) }
     var entries by remember { mutableStateOf<List<PdfStorageEntry>>(emptyList()) }
+    var allPdfs by remember { mutableStateOf<List<PdfStorageEntry>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    var isLoadingAll by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var search by rememberSaveable { mutableStateOf("") }
     var refreshKey by remember { mutableIntStateOf(0) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<PdfStorageEntry?>(null) }
     var renameValue by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<PdfStorageEntry?>(null) }
     var operationError by remember { mutableStateOf(false) }
 
-    LaunchedEffect(hasStorageAccess, currentFolder, refreshKey) {
+    val showAllPdfs = atRoot && filter == FileKindFilter.PDF
+
+    LaunchedEffect(hasStorageAccess, currentFolderPath, refreshKey, sort) {
         if (!hasStorageAccess) {
             roots = emptyList()
             entries = emptyList()
-            currentFolder = null
+            allPdfs = emptyList()
             return@LaunchedEffect
         }
         isLoading = true
         error = null
         try {
-            if (currentFolder == null) {
-                roots = withContext(Dispatchers.IO) { fileRepository.storageRoots() }
-                entries = emptyList()
+            roots = withContext(Dispatchers.IO) { fileRepository.storageRoots() }
+            entries = if (currentFolder != null) {
+                withContext(Dispatchers.IO) { fileRepository.list(currentFolder, sort) }
             } else {
-                entries = withContext(Dispatchers.IO) { fileRepository.list(currentFolder!!) }
+                emptyList()
             }
         } catch (failure: Exception) {
-            error = context.getString(R.string.folder_open_error)
+            error = folderOpenError
             entries = emptyList()
         } finally {
             isLoading = false
         }
     }
 
-    val filteredEntries = entries.filter {
-        it.isDirectory || it.file.name.contains(search, ignoreCase = true)
+    LaunchedEffect(hasStorageAccess, showAllPdfs, refreshKey, sort) {
+        if (!hasStorageAccess || !showAllPdfs) {
+            allPdfs = emptyList()
+            return@LaunchedEffect
+        }
+        isLoadingAll = true
+        try {
+            allPdfs = withContext(Dispatchers.IO) { fileRepository.allPdfs(sort) }
+        } catch (failure: Exception) {
+            error = folderOpenError
+            allPdfs = emptyList()
+        } finally {
+            isLoadingAll = false
+        }
+    }
+
+    val query = searchQuery.trim()
+    val matchesQuery: (PdfStorageEntry) -> Boolean = { entry ->
+        query.isBlank() || entry.file.name.contains(query, ignoreCase = true)
+    }
+    val visibleEntries = entries.filter { entry ->
+        val kindMatches = when (filter) {
+            FileKindFilter.ALL -> true
+            FileKindFilter.PDF -> !entry.isDirectory
+            FileKindFilter.FOLDER -> entry.isDirectory
+        }
+        kindMatches && matchesQuery(entry)
+    }
+    val visibleAllPdfs = allPdfs.filter(matchesQuery)
+    val visibleRoots = roots.filter { root ->
+        query.isBlank() ||
+            root.label.contains(query, ignoreCase = true) ||
+            root.directory.name.contains(query, ignoreCase = true)
+    }
+
+    fun navigateUp() {
+        val folder = currentFolder ?: return
+        val parent = folder.parentFile
+        onFolderChanged(if (roots.any { it.directory == parent }) null else parent?.absolutePath)
+    }
+
+    BackHandler(enabled = currentFolder != null) {
+        navigateUp()
     }
 
     Column(
@@ -585,107 +855,206 @@ private fun PdfFileBrowserScreen(
                         .height(54.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = {
-                        val parent = currentFolder?.parentFile
-                        currentFolder = if (roots.any { it.directory == parent }) null else parent
-                    }) {
+                    IconButton(onClick = { navigateUp() }) {
                         Icon(Icons.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                     }
                     Column(modifier = Modifier.weight(1f)) {
+                        val currentRoot = roots.firstOrNull {
+                            currentFolder.absolutePath == it.directory.absolutePath
+                        }
                         Text(
-                            currentFolder?.name.orEmpty(),
+                            currentRoot?.label ?: currentFolder.name,
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(
-                            stringResource(R.string.storage_internal),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else {
-                Text(
-                    stringResource(R.string.storage_internal),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(vertical = 12.dp),
-                )
-            }
-
-            if (currentFolder != null) {
-                OutlinedTextField(
-                    value = search,
-                    onValueChange = { search = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    placeholder = { Text(stringResource(R.string.search_hint)) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                )
-            }
-
-            if (isLoading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (error != null) {
-                Text(
-                    error.orEmpty(),
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(16.dp),
-                )
-            } else if (currentFolder == null) {
-                LazyColumn(
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(roots, key = { it.directory.path }) { root ->
-                        StorageRootRow(root = root, onClick = { currentFolder = root.directory })
-                    }
-                    if (roots.isEmpty()) {
-                        item {
+                        if (currentRoot == null) {
                             Text(
-                                stringResource(R.string.folder_open_error),
-                                modifier = Modifier.padding(16.dp),
+                                roots.firstOrNull {
+                                    currentFolder.absolutePath.startsWith(it.directory.absolutePath)
+                                }?.label ?: stringResource(R.string.storage_internal),
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
-                }
-            } else if (filteredEntries.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        stringResource(R.string.folder_empty),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Box {
+                        IconButton(onClick = { sortMenuOpen = true }) {
+                            Icon(
+                                Icons.Filled.Sort,
+                                contentDescription = stringResource(R.string.sort_files),
+                            )
+                        }
+                        SortMenu(
+                            expanded = sortMenuOpen,
+                            sort = sort,
+                            onDismiss = { sortMenuOpen = false },
+                            onSelect = {
+                                sortMenuOpen = false
+                                onSortChanged(it)
+                            },
+                        )
+                    }
                 }
             } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(top = 8.dp, bottom = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    items(filteredEntries, key = { it.file.absolutePath }) { entry ->
-                        PdfStorageEntryRow(
-                            entry = entry,
-                            onClick = {
-                                if (entry.isDirectory) {
-                                    currentFolder = entry.file
-                                    search = ""
-                                } else {
-                                    onOpenPdf(entry.file)
-                                }
-                            },
-                            onRename = {
-                                renameTarget = entry
-                                renameValue = entry.file.nameWithoutExtension
-                            },
-                            onDelete = { deleteTarget = entry },
-                        )
+                    Text(
+                        stringResource(
+                            if (showAllPdfs) R.string.all_pdfs_title
+                            else R.string.storage_internal,
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (filter == FileKindFilter.PDF) {
+                        Box {
+                            IconButton(onClick = { sortMenuOpen = true }) {
+                                Icon(
+                                    Icons.Filled.Sort,
+                                    contentDescription = stringResource(R.string.sort_files),
+                                )
+                            }
+                            SortMenu(
+                                expanded = sortMenuOpen,
+                                sort = sort,
+                                onDismiss = { sortMenuOpen = false },
+                                onSelect = {
+                                    sortMenuOpen = false
+                                    onSortChanged(it)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FileKindFilter.values().forEach { item ->
+                    FilterChip(
+                        selected = filter == item,
+                        onClick = { onFilterChanged(item) },
+                        label = {
+                            Text(
+                                stringResource(
+                                    when (item) {
+                                        FileKindFilter.ALL -> R.string.filter_all
+                                        FileKindFilter.PDF -> R.string.filter_pdf
+                                        FileKindFilter.FOLDER -> R.string.filter_folder
+                                    },
+                                ),
+                            )
+                        },
+                        leadingIcon = if (filter == item) {
+                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+
+            if (atRoot && filter == FileKindFilter.PDF) {
+                Text(
+                    stringResource(R.string.android_media_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+
+            when {
+                isLoading || (showAllPdfs && isLoadingAll) -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+                error != null -> {
+                    Text(
+                        error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+                showAllPdfs -> {
+                    if (visibleAllPdfs.isEmpty()) {
+                        EmptyFolderMessage(stringResource(R.string.all_pdfs_empty))
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(top = 8.dp, bottom = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            items(visibleAllPdfs, key = { it.file.absolutePath }) { entry ->
+                                PdfStorageEntryRow(
+                                    entry = entry,
+                                    onClick = { onOpenPdf(entry.file) },
+                                    onRename = {
+                                        renameTarget = entry
+                                        renameValue = entry.file.nameWithoutExtension
+                                    },
+                                    onDelete = { deleteTarget = entry },
+                                )
+                            }
+                        }
+                    }
+                }
+                atRoot -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(visibleRoots, key = { it.directory.path }) { root ->
+                            StorageRootRow(
+                                root = root,
+                                onClick = { onFolderChanged(root.directory.absolutePath) },
+                            )
+                        }
+                        if (visibleRoots.isEmpty()) {
+                            item {
+                                Text(
+                                    stringResource(R.string.folder_open_error),
+                                    modifier = Modifier.padding(16.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                visibleEntries.isEmpty() -> {
+                    EmptyFolderMessage(stringResource(R.string.folder_empty))
+                }
+                else -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(visibleEntries, key = { it.file.absolutePath }) { entry ->
+                            PdfStorageEntryRow(
+                                entry = entry,
+                                onClick = {
+                                    if (entry.isDirectory) {
+                                        onFolderChanged(entry.file.absolutePath)
+                                    } else {
+                                        onOpenPdf(entry.file)
+                                    }
+                                },
+                                onRename = {
+                                    renameTarget = entry
+                                    renameValue = entry.file.nameWithoutExtension
+                                },
+                                onDelete = { deleteTarget = entry },
+                            )
+                        }
                     }
                 }
             }
@@ -735,7 +1104,6 @@ private fun PdfFileBrowserScreen(
                                 fileRepository.renamePdf(target.file, renameValue)
                             }
                             onRenamePdf(target.file, renamed)
-                            currentFolder = target.file.parentFile
                             renameTarget = null
                             refreshKey++
                         } catch (failure: IllegalArgumentException) {
@@ -805,6 +1173,54 @@ private fun PdfFileBrowserScreen(
 }
 
 @Composable
+private fun SortMenu(
+    expanded: Boolean,
+    sort: PdfFileSort,
+    onDismiss: () -> Unit,
+    onSelect: (PdfFileSort) -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        PdfFileSort.values().forEach { option ->
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            when (option) {
+                                PdfFileSort.NAME_ASC -> R.string.sort_name_asc
+                                PdfFileSort.NAME_DESC -> R.string.sort_name_desc
+                                PdfFileSort.NEWEST -> R.string.sort_newest
+                                PdfFileSort.LARGEST -> R.string.sort_largest
+                            },
+                        ),
+                    )
+                },
+                trailingIcon = if (sort == option) {
+                    { Icon(Icons.Filled.Check, contentDescription = null) }
+                } else {
+                    null
+                },
+                onClick = { onSelect(option) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyFolderMessage(message: String) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            message,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(24.dp),
+        )
+    }
+}
+
+@Composable
 private fun StorageAccessCard(
     onEnable: () -> Unit,
     modifier: Modifier = Modifier,
@@ -865,11 +1281,13 @@ private fun StorageRootRow(root: PdfStorageRoot, onClick: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column {
                 Text(root.label, fontWeight = FontWeight.Medium)
-                Text(
-                    root.directory.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (root.directory.name != "0") {
+                    Text(
+                        root.directory.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -950,29 +1368,92 @@ private fun PdfStorageEntryRow(
 @Composable
 private fun SettingsScreen(
     modifier: Modifier,
+    page: SettingsPage,
     themeMode: ThemeMode,
+    textSize: TextSizeMode,
+    hasStorageAccess: Boolean,
+    updateCheck: UpdateCheckState,
+    appVersion: String,
     onThemeChanged: (ThemeMode) -> Unit,
+    onTextSizeChanged: (TextSizeMode) -> Unit,
+    onCheckUpdate: () -> Unit,
+    onRequestStorageAccess: () -> Unit,
+    onOpenSupport: () -> Unit,
+    onOpenChangelog: () -> Unit,
 ) {
+    when (page) {
+        SettingsPage.SUPPORT -> SupportScreen(modifier = modifier, appVersion = appVersion)
+        SettingsPage.CHANGELOG -> ChangelogScreen(modifier = modifier, appVersion = appVersion)
+        SettingsPage.ROOT -> SettingsRootScreen(
+            modifier = modifier,
+            themeMode = themeMode,
+            textSize = textSize,
+            hasStorageAccess = hasStorageAccess,
+            updateCheck = updateCheck,
+            appVersion = appVersion,
+            onThemeChanged = onThemeChanged,
+            onTextSizeChanged = onTextSizeChanged,
+            onCheckUpdate = onCheckUpdate,
+            onRequestStorageAccess = onRequestStorageAccess,
+            onOpenSupport = onOpenSupport,
+            onOpenChangelog = onOpenChangelog,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SettingsRootScreen(
+    modifier: Modifier,
+    themeMode: ThemeMode,
+    textSize: TextSizeMode,
+    hasStorageAccess: Boolean,
+    updateCheck: UpdateCheckState,
+    appVersion: String,
+    onThemeChanged: (ThemeMode) -> Unit,
+    onTextSizeChanged: (TextSizeMode) -> Unit,
+    onCheckUpdate: () -> Unit,
+    onRequestStorageAccess: () -> Unit,
+    onOpenSupport: () -> Unit,
+    onOpenChangelog: () -> Unit,
+) {
+    var showDefaultPdfInfo by remember { mutableStateOf(false) }
+    var showLicenseInfo by remember { mutableStateOf(false) }
+
+    val updateSubtitle = when {
+        updateCheck.checking -> stringResource(R.string.check_update_checking)
+        updateCheck.availableVersion != null -> stringResource(
+            R.string.check_update_available,
+            updateCheck.availableVersion,
+        )
+        updateCheck.upToDate -> stringResource(R.string.check_update_latest, appVersion)
+        updateCheck.failed -> stringResource(R.string.check_update_failed)
+        else -> stringResource(R.string.check_update_hint)
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 26.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         item {
-            Text(
-                stringResource(R.string.appearance),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        item {
-            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+            SettingsCard(
+                title = stringResource(R.string.appearance),
+                icon = Icons.Filled.Palette,
+            ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(stringResource(R.string.theme), style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        stringResource(R.string.theme),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         listOf(
                             ThemeMode.SYSTEM to R.string.theme_system,
                             ThemeMode.LIGHT to R.string.theme_light,
@@ -990,66 +1471,325 @@ private fun SettingsScreen(
                             )
                         }
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        stringResource(R.string.text_size_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            TextSizeMode.SYSTEM to R.string.text_size_system,
+                            TextSizeMode.SMALL to R.string.text_size_small,
+                            TextSizeMode.STANDARD to R.string.text_size_standard,
+                            TextSizeMode.LARGE to R.string.text_size_large,
+                        ).forEach { (mode, label) ->
+                            FilterChip(
+                                selected = textSize == mode,
+                                onClick = { onTextSizeChanged(mode) },
+                                label = { Text(stringResource(label)) },
+                                leadingIcon = if (textSize == mode) {
+                                    { Icon(Icons.Filled.Check, contentDescription = null) }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
+
         item {
+            SettingsCard(
+                title = stringResource(R.string.settings_library),
+                icon = Icons.Filled.Bookmark,
+            ) {
+                SettingsRow(
+                    icon = Icons.Filled.SystemUpdate,
+                    title = stringResource(R.string.check_update),
+                    subtitle = updateSubtitle,
+                    onClick = if (updateCheck.checking) null else onCheckUpdate,
+                ) {
+                    when {
+                        updateCheck.checking -> CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        updateCheck.availableVersion != null -> Icon(
+                            Icons.Filled.SystemUpdate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        updateCheck.upToDate -> Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        updateCheck.failed -> Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                        )
+                        else -> Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsRow(
+                    icon = Icons.Filled.History,
+                    title = stringResource(R.string.version_history),
+                    subtitle = stringResource(R.string.version_history_hint),
+                    onClick = onOpenChangelog,
+                ) {
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsRow(
+                    icon = Icons.Filled.Visibility,
+                    title = stringResource(R.string.default_pdf_title),
+                    subtitle = stringResource(R.string.default_pdf_hint),
+                    onClick = { showDefaultPdfInfo = true },
+                ) {
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                }
+            }
+        }
+
+        item {
+            SettingsCard(
+                title = stringResource(R.string.settings_files),
+                icon = Icons.Filled.Storage,
+            ) {
+                SettingsRow(
+                    icon = Icons.Filled.FolderOpen,
+                    title = stringResource(R.string.storage_access_row),
+                    subtitle = stringResource(
+                        if (hasStorageAccess) R.string.storage_access_granted
+                        else R.string.storage_access_missing,
+                    ),
+                    onClick = onRequestStorageAccess,
+                ) {
+                    if (hasStorageAccess) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    } else {
+                        Text(
+                            stringResource(R.string.manage_access),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text(
+                    stringResource(R.string.android_media_note),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        item {
+            SettingsCard(
+                title = stringResource(R.string.settings_about),
+                icon = Icons.Filled.Email,
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(56.dp),
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.ic_mass_pdf_foreground),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(3.dp),
+                            )
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                stringResource(R.string.app_name),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                stringResource(R.string.app_version_label, appVersion),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Text(
+                        stringResource(R.string.about_credit),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                SettingsRow(
+                    icon = Icons.Filled.Email,
+                    title = stringResource(R.string.support_email),
+                    subtitle = stringResource(R.string.support_email_hint),
+                    onClick = onOpenSupport,
+                ) {
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsRow(
+                    icon = Icons.Filled.Description,
+                    title = stringResource(R.string.license_title),
+                    subtitle = stringResource(R.string.license_hint),
+                    onClick = { showLicenseInfo = true },
+                ) {
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null)
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        stringResource(R.string.support_credit_line1),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        stringResource(R.string.support_credit_line2),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    if (showDefaultPdfInfo) {
+        AlertDialog(
+            onDismissRequest = { showDefaultPdfInfo = false },
+            title = { Text(stringResource(R.string.default_pdf_title)) },
+            text = { Text(stringResource(R.string.default_pdf_message)) },
+            confirmButton = {
+                TextButton(onClick = { showDefaultPdfInfo = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            },
+        )
+    }
+
+    if (showLicenseInfo) {
+        AlertDialog(
+            onDismissRequest = { showLicenseInfo = false },
+            title = { Text(stringResource(R.string.license_title)) },
+            text = { Text(stringResource(R.string.license_body)) },
+            confirmButton = {
+                TextButton(onClick = { showLicenseInfo = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    title: String,
+    icon: ImageVector,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(34.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
             Text(
-                stringResource(R.string.default_pdf_title),
+                title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        item {
-            InfoCard(
-                icon = { Icon(Icons.Filled.Visibility, contentDescription = null) },
-                title = stringResource(R.string.default_pdf_title),
-                body = stringResource(R.string.default_pdf_message),
-            )
-        }
-        item {
-            Text(
-                stringResource(R.string.storage_policy_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        item {
-            InfoCard(
-                icon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
-                title = stringResource(R.string.storage_policy_title),
-                body = stringResource(R.string.storage_policy_message),
+        ElevatedCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(),
+            shape = RoundedCornerShape(24.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                content = content,
             )
         }
     }
 }
 
 @Composable
-private fun InfoCard(
-    icon: @Composable () -> Unit,
+private fun SettingsRow(
+    icon: ImageVector,
     title: String,
-    body: String,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable RowScope.() -> Unit = {},
 ) {
-    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Top,
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 4.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.size(42.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) { icon() }
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(title, fontWeight = FontWeight.SemiBold)
-                Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(title, fontWeight = FontWeight.Medium)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
+        trailing()
     }
 }
 

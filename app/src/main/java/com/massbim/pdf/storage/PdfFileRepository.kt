@@ -15,6 +15,13 @@ data class PdfStorageEntry(
     val modifiedAt: Long,
 )
 
+enum class PdfFileSort {
+    NAME_ASC,
+    NAME_DESC,
+    NEWEST,
+    LARGEST,
+}
+
 class PdfFileRepository(private val context: Context) {
     fun storageRoots(): List<PdfStorageRoot> {
         requireStorageAccess()
@@ -24,17 +31,32 @@ class PdfFileRepository(private val context: Context) {
             .distinctBy { it.directory.path }
     }
 
-    fun list(directory: File): List<PdfStorageEntry> {
+    fun list(directory: File, sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> {
         requireStorageAccess()
         val root = requireSafePath(directory)
         if (!directory.isDirectory || !directory.canRead()) {
             throw IOException("Folder tidak dapat dibaca")
         }
         val children = directory.listFiles() ?: throw IOException("Folder tidak dapat dibaca")
-        return children.asSequence()
-            .filterNot { PdfFileRules.isProtectedDirectory(it.name) }
+        val directoriesWithPdf = mutableSetOf<String>()
+        collectPdfs(
+            directory = directory,
+            root = root,
+            depth = 0,
+            pdfs = mutableListOf(),
+            directoriesWithPdf = directoriesWithPdf,
+            budget = intArrayOf(SCAN_BUDGET),
+        )
+        val entries = children.asSequence()
+            .filterNot { PdfFileRules.isHidden(it.name) }
             .filterNot { Files.isSymbolicLink(it.toPath()) }
-            .filter { it.isDirectory || (it.isFile && PdfFileRules.isPdf(it.name)) }
+            .filter { PdfFileRules.isAndroidPathAllowed(relativeSegments(root, it)) }
+            .filter {
+                when {
+                    it.isDirectory -> directoriesWithPdf.contains(it.absolutePath)
+                    else -> it.isFile && PdfFileRules.isPdf(it.name)
+                }
+            }
             .onEach { requireWithinRoot(root, it) }
             .map {
                 PdfStorageEntry(
@@ -44,8 +66,35 @@ class PdfFileRepository(private val context: Context) {
                     modifiedAt = it.lastModified(),
                 )
             }
-            .sortedWith(compareBy<PdfStorageEntry> { !it.isDirectory }.thenBy { it.file.name.lowercase() })
             .toList()
+        return sorted(entries, sort)
+    }
+
+    /** Semua PDF di seluruh penyimpanan, dipakai filter "PDF" agar tidak perlu membuka folder. */
+    fun allPdfs(sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> {
+        requireStorageAccess()
+        val pdfs = mutableListOf<File>()
+        val directoriesWithPdf = mutableSetOf<String>()
+        val budget = intArrayOf(SCAN_BUDGET)
+        for (root in storageRoots()) {
+            collectPdfs(
+                directory = root.directory,
+                root = root.directory,
+                depth = 0,
+                pdfs = pdfs,
+                directoriesWithPdf = directoriesWithPdf,
+                budget = budget,
+            )
+        }
+        val entries = pdfs.distinctBy { it.absolutePath }.map {
+            PdfStorageEntry(
+                file = it,
+                isDirectory = false,
+                sizeBytes = it.length(),
+                modifiedAt = it.lastModified(),
+            )
+        }
+        return sorted(entries, sort)
     }
 
     @Throws(IOException::class, SecurityException::class)
@@ -84,6 +133,51 @@ class PdfFileRepository(private val context: Context) {
         if (!file.delete()) throw IOException("PDF tidak dapat dihapus")
     }
 
+    private fun collectPdfs(
+        directory: File,
+        root: File,
+        depth: Int,
+        pdfs: MutableList<File>,
+        directoriesWithPdf: MutableSet<String>,
+        budget: IntArray,
+    ): Boolean {
+        if (depth > SCAN_DEPTH || budget[0] <= 0) return false
+        val children = directory.listFiles() ?: return false
+        budget[0] -= children.size
+        var hasPdf = false
+        for (child in children) {
+            if (child.isFile && PdfFileRules.isPdf(child.name)) {
+                pdfs.add(child)
+                hasPdf = true
+            }
+        }
+        for (child in children) {
+            if (!child.isDirectory) continue
+            if (PdfFileRules.isHidden(child.name)) continue
+            if (Files.isSymbolicLink(child.toPath())) continue
+            if (!isWithin(root, child)) continue
+            if (!PdfFileRules.isAndroidPathAllowed(relativeSegments(root, child))) continue
+            if (collectPdfs(child, root, depth + 1, pdfs, directoriesWithPdf, budget)) {
+                directoriesWithPdf.add(child.absolutePath)
+                hasPdf = true
+            }
+        }
+        return hasPdf
+    }
+
+    private fun sorted(
+        entries: List<PdfStorageEntry>,
+        sort: PdfFileSort,
+    ): List<PdfStorageEntry> {
+        val valueOrder: Comparator<PdfStorageEntry> = when (sort) {
+            PdfFileSort.NAME_ASC -> compareBy { it.file.name.lowercase() }
+            PdfFileSort.NAME_DESC -> compareByDescending { it.file.name.lowercase() }
+            PdfFileSort.NEWEST -> compareByDescending { it.modifiedAt }
+            PdfFileSort.LARGEST -> compareByDescending { it.sizeBytes }
+        }
+        return entries.sortedWith(compareBy<PdfStorageEntry> { !it.isDirectory }.then(valueOrder))
+    }
+
     private fun storageRootFor(appSpecificDirectory: File): PdfStorageRoot? {
         val path = appSpecificDirectory.absolutePath.replace('\\', '/')
         val marker = "/Android/data/"
@@ -113,18 +207,25 @@ class PdfFileRepository(private val context: Context) {
         if (!isWithin(root, normalizedTarget)) {
             throw SecurityException("Lokasi di luar shared storage yang diizinkan")
         }
+        if (!PdfFileRules.isAndroidPathAllowed(relativeSegments(root, normalizedTarget))) {
+            throw SecurityException("Direktori sistem yang dilindungi tidak dapat dibuka")
+        }
         var current: File? = normalizedTarget
         while (current != null && isWithin(root, current)) {
             if (Files.isSymbolicLink(current.toPath())) {
                 throw SecurityException("Shortcut file tidak dapat dikelola")
             }
-            if (current != root && PdfFileRules.isProtectedDirectory(current.name)) {
-                throw SecurityException("Direktori sistem yang dilindungi tidak dapat dibuka")
-            }
             if (current == root) return
             current = current.parentFile
         }
         throw SecurityException("Lokasi di luar shared storage yang diizinkan")
+    }
+
+    private fun relativeSegments(root: File, target: File): List<String> {
+        val rootPath = root.absoluteFile.toPath().normalize()
+        val targetPath = target.absoluteFile.toPath().normalize()
+        if (!targetPath.startsWith(rootPath)) return listOf("..")
+        return rootPath.relativize(targetPath).map { it.toString() }
     }
 
     private fun isWithin(root: File, target: File): Boolean {
@@ -137,5 +238,10 @@ class PdfFileRepository(private val context: Context) {
         if (!StoragePermissionManager.hasAccess(context)) {
             throw SecurityException("Izin akses shared storage belum diberikan")
         }
+    }
+
+    private companion object {
+        const val SCAN_DEPTH = 8
+        const val SCAN_BUDGET = 3000
     }
 }

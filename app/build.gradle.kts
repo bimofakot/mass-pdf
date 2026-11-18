@@ -21,9 +21,9 @@ android {
         minSdk = 28
         targetSdk = 36
         // Workflow rilis mengisi nomor versi dari tag agar update dapat dipasang di atas versi lama.
-        versionCode = providers.environmentVariable("ANDROID_VERSION_CODE").orNull?.toIntOrNull() ?: 1
+        versionCode = providers.environmentVariable("ANDROID_VERSION_CODE").orNull?.toIntOrNull() ?: 3
         versionName = providers.environmentVariable("ANDROID_VERSION_NAME").orNull
-            ?.removePrefix("v") ?: "0.1.0"
+            ?.removePrefix("v") ?: "0.1.2"
     }
 
     signingConfigs {
