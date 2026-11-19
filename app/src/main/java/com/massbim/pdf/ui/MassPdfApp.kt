@@ -3,13 +3,11 @@ package com.massbim.pdf.ui
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +22,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,9 +32,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import com.massbim.pdf.data.LibraryDocuments
+import com.massbim.pdf.data.PdfMetadata
+import com.massbim.pdf.storage.PdfThumbnailRepository
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -51,6 +65,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -95,6 +110,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -151,6 +167,11 @@ private enum class SettingsPage {
     CHANGELOG,
 }
 
+private val LocalThumbnailRepository = staticCompositionLocalOf<PdfThumbnailRepository> {
+    error("PdfThumbnailRepository belum disediakan")
+}
+private const val TAG = "MassPdfApp"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MassPdfApp(
@@ -168,11 +189,13 @@ fun MassPdfApp(
     updatePrompt: UpdatePrompt?,
     updateCheck: UpdateCheckState,
     storageSettingsError: Boolean,
+    defaultAppsInfo: Boolean,
     fileRepository: PdfFileRepository,
     onOpenPdf: (Uri, String, Boolean) -> Unit,
     onCloseReader: () -> Unit,
     onSharePdf: (Uri, String) -> Unit,
     onRequestStorageAccess: () -> Unit,
+    onOpenDefaultAppSettings: () -> Unit,
     onPageChanged: (Uri, Int) -> Unit,
     onTogglePinned: (Uri) -> Unit,
     onRemoveRecent: (Uri) -> Unit,
@@ -185,6 +208,7 @@ fun MassPdfApp(
     onDismissUpdate: () -> Unit,
     onDownloadUpdate: (String) -> Unit,
     onDismissStorageSettingsError: () -> Unit,
+    onDismissDefaultAppsInfo: () -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.LIBRARY.name) }
     var settingsPageName by rememberSaveable { mutableStateOf(SettingsPage.ROOT.name) }
@@ -192,6 +216,7 @@ fun MassPdfApp(
     var fileFilterName by rememberSaveable { mutableStateOf(FileKindFilter.ALL.name) }
     var fileSearchQuery by rememberSaveable { mutableStateOf("") }
     var fileSearchActive by rememberSaveable { mutableStateOf(false) }
+    var fileAutoOpened by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
 
     val selected = HomeTab.valueOf(selectedTab)
@@ -238,11 +263,15 @@ fun MassPdfApp(
         }
     }
 
+    val applicationContext = context.applicationContext
+    val thumbnailRepository = remember(applicationContext) { PdfThumbnailRepository(applicationContext) }
+    val libraryStateHolder = rememberSaveableStateHolder()
+    CompositionLocalProvider(LocalThumbnailRepository provides thumbnailRepository) {
     if (currentUri != null) {
         PdfReaderScreen(
             uri = currentUri,
             title = currentTitle.orEmpty(),
-            document = document.takeIf { documentUri == currentUri },
+            document = document.takeIf { documentUri == currentUri && !loading },
             loading = loading,
             errorMessage = errorMessage,
             resumePage = recentDocuments.firstOrNull { it.uri == currentUri.toString() }?.lastPage ?: 0,
@@ -351,9 +380,12 @@ fun MassPdfApp(
             },
         ) { padding ->
             when (selected) {
-                HomeTab.LIBRARY -> LibraryScreen(
+                HomeTab.LIBRARY -> libraryStateHolder.SaveableStateProvider("library") {
+                LibraryScreen(
                     modifier = Modifier.padding(padding),
                     recentDocuments = recentDocuments,
+                    sort = fileSort,
+                    onSortChanged = onFileSortChanged,
                     errorMessage = errorMessage,
                     onChoosePdf = { picker.launch(arrayOf("application/pdf")) },
                     onOpenPdf = { uri, title ->
@@ -362,12 +394,16 @@ fun MassPdfApp(
                     onSharePdf = onSharePdf,
                     onTogglePinned = onTogglePinned,
                 )
+                }
                 HomeTab.FILES -> PdfFileBrowserScreen(
                     modifier = Modifier.padding(padding),
                     hasStorageAccess = hasStorageAccess,
                     fileRepository = fileRepository,
+                    recentUris = recentDocuments.map { it.uri },
                     currentFolderPath = fileFolderPath,
                     onFolderChanged = ::navigateFolder,
+                    autoOpenDefault = !fileAutoOpened,
+                    onAutoOpened = { fileAutoOpened = true },
                     filter = fileFilter,
                     onFilterChanged = { fileFilterName = it.name },
                     searchQuery = fileSearchQuery,
@@ -397,11 +433,14 @@ fun MassPdfApp(
                     onTextSizeChanged = onTextSizeChanged,
                     onCheckUpdate = onCheckUpdate,
                     onRequestStorageAccess = onRequestStorageAccess,
+                    onOpenDefaultAppSettings = onOpenDefaultAppSettings,
                     onOpenSupport = { settingsPageName = SettingsPage.SUPPORT.name },
                     onOpenChangelog = { settingsPageName = SettingsPage.CHANGELOG.name },
                 )
             }
         }
+    }
+
     }
 
     if (updatePrompt != null) {
@@ -427,6 +466,20 @@ fun MassPdfApp(
             },
         )
     }
+
+    // Muncul hanya bila pengaturan aplikasi default tidak tersedia di perangkat ini.
+    if (defaultAppsInfo) {
+        AlertDialog(
+            onDismissRequest = onDismissDefaultAppsInfo,
+            title = { Text(stringResource(R.string.default_pdf_title)) },
+            text = { Text(stringResource(R.string.default_pdf_message)) },
+            confirmButton = {
+                TextButton(onClick = onDismissDefaultAppsInfo) {
+                    Text(stringResource(R.string.close))
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -435,70 +488,63 @@ private fun UpdateAvailableDialog(
     onDismiss: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { visible = true }
     Dialog(onDismissRequest = onDismiss) {
-        AnimatedVisibility(
-            visible = visible,
-            enter = fadeIn() + scaleIn(initialScale = 0.92f),
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
         ) {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(28.dp),
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(58.dp),
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(58.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Filled.SystemUpdate,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(28.dp),
-                            )
-                        }
-                    }
-                    Text(
-                        stringResource(R.string.update_available_title),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ) {
-                        Text(
-                            stringResource(R.string.app_version_label, version),
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Medium,
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.SystemUpdate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp),
                         )
                     }
+                }
+                Text(
+                    stringResource(R.string.update_available_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
                     Text(
-                        stringResource(R.string.update_available_message, version),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
+                        stringResource(R.string.app_version_label, version),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                     )
-                    Button(
-                        onClick = onDownload,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                    ) {
-                        Text(stringResource(R.string.download_update))
-                    }
-                    TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.later))
-                    }
+                }
+                Text(
+                    stringResource(R.string.update_available_message, version),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Button(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                ) {
+                    Text(stringResource(R.string.download_update))
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.later))
                 }
             }
         }
@@ -509,6 +555,8 @@ private fun UpdateAvailableDialog(
 private fun LibraryScreen(
     modifier: Modifier,
     recentDocuments: List<RecentPdf>,
+    sort: PdfFileSort,
+    onSortChanged: (PdfFileSort) -> Unit,
     errorMessage: String?,
     onChoosePdf: () -> Unit,
     onOpenPdf: (Uri, String) -> Unit,
@@ -516,16 +564,41 @@ private fun LibraryScreen(
     onTogglePinned: (Uri) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val visibleDocuments = recentDocuments
+    var showAllPinned by rememberSaveable { mutableStateOf(false) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    val repository = LocalThumbnailRepository.current
+    val generation by repository.generation.collectAsState()
+    val metadata by produceState<Map<String, PdfMetadata>>(
+        emptyMap(), repository, recentDocuments.map { it.uri }, generation, sort,
+    ) {
+        value = emptyMap()
+        if (sort != PdfFileSort.NEWEST && sort != PdfFileSort.LARGEST) return@produceState
+        value = withContext(Dispatchers.IO) {
+            buildMap {
+                recentDocuments.forEach { document ->
+                    try {
+                        repository.metadata(Uri.parse(document.uri))?.let { put(document.uri, it) }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // Metadata tidak tersedia: pengurutan memakai fallback nama.
+                    }
+                }
+            }
+        }
+    }
+    val visibleDocuments = LibraryDocuments.sorted(recentDocuments, sort, metadata)
         .filter { it.title.contains(query, ignoreCase = true) }
-        .sortedWith(compareByDescending<RecentPdf> { it.pinned })
+    val pinnedDocuments = visibleDocuments.filter { it.pinned }
+    val recentDocumentsOnly = visibleDocuments.filterNot { it.pinned }
+    BackHandler(enabled = showAllPinned) { showAllPinned = false }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item {
+        if (!showAllPinned) item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
@@ -536,8 +609,7 @@ private fun LibraryScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(22.dp)
-                        .animateContentSize(),
+                        .padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Icon(
@@ -587,19 +659,67 @@ private fun LibraryScreen(
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                placeholder = { Text(stringResource(R.string.search_hint)) },
+                label = { Text(stringResource(R.string.library_search)) },
                 singleLine = true,
                 shape = RoundedCornerShape(18.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             )
         }
 
-        if (visibleDocuments.any { it.pinned }) {
-            item {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (showAllPinned) {
+                    IconButton(onClick = { showAllPinned = false }) {
+                        Icon(Icons.Filled.ArrowBack, stringResource(R.string.back))
+                    }
+                }
                 Text(
-                    stringResource(R.string.pinned_documents),
+                    stringResource(if (showAllPinned) R.string.all_pinned else R.string.library),
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                )
+                Box {
+                    TextButton(onClick = { sortMenuOpen = true }) {
+                        Icon(Icons.Filled.Sort, contentDescription = null)
+                        Text(stringResource(sortLabel(sort)))
+                    }
+                    SortMenu(sortMenuOpen, sort, { sortMenuOpen = false }) {
+                        sortMenuOpen = false
+                        onSortChanged(it)
+                    }
+                }
+            }
+        }
+        if (showAllPinned) {
+            if (pinnedDocuments.isEmpty()) item { EmptyLibraryState(query) }
+            items(pinnedDocuments, key = { it.uri }) { document ->
+                RecentDocumentCard(
+                    document = document,
+                    onOpen = { onOpenPdf(Uri.parse(document.uri), document.title) },
+                    onShare = { onSharePdf(Uri.parse(document.uri), document.title) },
+                    onTogglePinned = { onTogglePinned(Uri.parse(document.uri)) },
+                )
+            }
+        } else {
+        if (pinnedDocuments.isNotEmpty()) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(R.string.pinned_documents),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TextButton(onClick = { showAllPinned = true }) {
+                        Text(stringResource(R.string.see_all))
+                    }
+                }
+            }
+            item {
+                PinnedDocumentGrid(
+                    documents = pinnedDocuments,
+                    onOpen = { onOpenPdf(Uri.parse(it.uri), it.title) },
+                    onTogglePinned = { onTogglePinned(Uri.parse(it.uri)) },
                 )
             }
         }
@@ -608,7 +728,7 @@ private fun LibraryScreen(
             item {
                 EmptyLibraryState(query = query)
             }
-        } else {
+        } else if (recentDocumentsOnly.isNotEmpty()) {
             item {
                 Text(
                     stringResource(R.string.recent_documents),
@@ -616,12 +736,137 @@ private fun LibraryScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            items(visibleDocuments, key = { it.uri }) { recent ->
+            items(recentDocumentsOnly, key = { it.uri }) { recent ->
                 RecentDocumentCard(
                     document = recent,
                     onOpen = { onOpenPdf(Uri.parse(recent.uri), recent.title) },
                     onShare = { onSharePdf(Uri.parse(recent.uri), recent.title) },
                     onTogglePinned = { onTogglePinned(Uri.parse(recent.uri)) },
+                )
+            }
+        }
+    }
+    }
+}
+
+@Composable
+private fun PinnedDocumentGrid(
+    documents: List<RecentPdf>,
+    onOpen: (RecentPdf) -> Unit,
+    onTogglePinned: (RecentPdf) -> Unit,
+) {
+    val pages = LibraryDocuments.pinnedPages(documents)
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val cardHeight = (88 + 78 * fontScale).dp
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+            pageSpacing = 12.dp,
+            verticalAlignment = Alignment.Top,
+        ) { page ->
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                repeat(2) { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        repeat(2) { column ->
+                            val document = pages[page].getOrNull(row * 2 + column)
+                            Box(modifier = Modifier.weight(1f).heightIn(min = cardHeight)) {
+                                if (document != null) PinnedDocumentCard(
+                                    document = document,
+                                    onOpen = { onOpen(document) },
+                                    onUnpin = { onTogglePinned(document) },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (pages.size > 1) {
+            val scope = rememberCoroutineScope()
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    enabled = pagerState.currentPage > 0,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                ) { Icon(Icons.Filled.ChevronLeft, stringResource(R.string.previous_page)) }
+                Text(
+                    stringResource(R.string.pinned_page, pagerState.currentPage + 1, pages.size),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = TextAlign.Center,
+                )
+                IconButton(
+                    enabled = pagerState.currentPage < pages.lastIndex,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
+                ) { Icon(Icons.Filled.ChevronRight, stringResource(R.string.next_page)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PinnedDocumentCard(
+    document: RecentPdf,
+    onOpen: () -> Unit,
+    onUnpin: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ElevatedCard(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.size(56.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        PdfThumbnail(
+                            LocalThumbnailRepository.current,
+                            Uri.parse(document.uri),
+                            Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onUnpin, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        Icons.Filled.Bookmark,
+                        contentDescription = stringResource(R.string.unpin_document),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+            Text(
+                document.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            if (document.lastPage > 0) {
+                Text(
+                    stringResource(R.string.search_page_result, document.lastPage + 1),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -645,7 +890,7 @@ private fun EmptyLibraryState(query: String) {
         )
         Text(
             if (query.isBlank()) stringResource(R.string.recent_empty_title)
-            else stringResource(R.string.search_no_results),
+            else stringResource(R.string.search_files_no_results),
             style = MaterialTheme.typography.titleMedium,
         )
         if (query.isBlank()) {
@@ -674,8 +919,8 @@ private fun RecentDocumentCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(76.dp)
-                .padding(start = 14.dp, end = 6.dp),
+                .heightIn(min = 76.dp)
+                .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
@@ -684,10 +929,10 @@ private fun RecentDocumentCard(
                 modifier = Modifier.size(48.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Filled.PictureAsPdf,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                    PdfThumbnail(
+                        LocalThumbnailRepository.current,
+                        Uri.parse(document.uri),
+                        Modifier.fillMaxSize(),
                     )
                 }
             }
@@ -736,8 +981,11 @@ private fun PdfFileBrowserScreen(
     modifier: Modifier,
     hasStorageAccess: Boolean,
     fileRepository: PdfFileRepository,
+    recentUris: List<String>,
     currentFolderPath: String?,
     onFolderChanged: (String?) -> Unit,
+    autoOpenDefault: Boolean,
+    onAutoOpened: () -> Unit,
     filter: FileKindFilter,
     onFilterChanged: (FileKindFilter) -> Unit,
     searchQuery: String,
@@ -758,7 +1006,8 @@ private fun PdfFileBrowserScreen(
     var allPdfs by remember { mutableStateOf<List<PdfStorageEntry>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var isLoadingAll by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var folderError by remember { mutableStateOf(false) }
+    var allPdfsError by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var sortMenuOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<PdfStorageEntry?>(null) }
@@ -768,40 +1017,61 @@ private fun PdfFileBrowserScreen(
 
     val showAllPdfs = atRoot && filter == FileKindFilter.PDF
 
-    LaunchedEffect(hasStorageAccess, currentFolderPath, refreshKey, sort) {
+    LaunchedEffect(Unit) {
+        fileRepository.invalidateIndex()
+    }
+
+    LaunchedEffect(hasStorageAccess, currentFolderPath, refreshKey, sort, recentUris) {
         if (!hasStorageAccess) {
             roots = emptyList()
             entries = emptyList()
             allPdfs = emptyList()
+            folderError = false
+            allPdfsError = false
             return@LaunchedEffect
         }
         isLoading = true
-        error = null
+        folderError = false
         try {
             roots = withContext(Dispatchers.IO) { fileRepository.storageRoots() }
-            entries = if (currentFolder != null) {
-                withContext(Dispatchers.IO) { fileRepository.list(currentFolder, sort) }
+            if (currentFolder == null) {
+                entries = emptyList()
+                if (autoOpenDefault && roots.isNotEmpty()) {
+                    onAutoOpened()
+                    val preferred = roots.firstOrNull { !it.isRemovable } ?: roots.first()
+                    onFolderChanged(preferred.directory.absolutePath)
+                }
             } else {
-                emptyList()
+                entries = withContext(Dispatchers.IO) {
+                    try {
+                        fileRepository.list(currentFolder, sort, recentUris)
+                    } catch (failure: Exception) {
+                        // MediaStore sesekali fails transien; coba sekali lagi dengan indeks baru.
+                        fileRepository.invalidateIndex()
+                        fileRepository.list(currentFolder, sort, recentUris)
+                    }
+                }
             }
         } catch (failure: Exception) {
-            error = folderOpenError
+            folderError = true
             entries = emptyList()
         } finally {
             isLoading = false
         }
     }
 
-    LaunchedEffect(hasStorageAccess, showAllPdfs, refreshKey, sort) {
+    LaunchedEffect(hasStorageAccess, showAllPdfs, refreshKey, sort, recentUris) {
         if (!hasStorageAccess || !showAllPdfs) {
             allPdfs = emptyList()
+            allPdfsError = false
             return@LaunchedEffect
         }
         isLoadingAll = true
+        allPdfsError = false
         try {
-            allPdfs = withContext(Dispatchers.IO) { fileRepository.allPdfs(sort) }
+            allPdfs = withContext(Dispatchers.IO) { fileRepository.allPdfs(sort, recentUris) }
         } catch (failure: Exception) {
-            error = folderOpenError
+            allPdfsError = true
             allPdfs = emptyList()
         } finally {
             isLoadingAll = false
@@ -829,8 +1099,17 @@ private fun PdfFileBrowserScreen(
 
     fun navigateUp() {
         val folder = currentFolder ?: return
+        val root = roots.firstOrNull { isInside(it.directory, folder) }
+        val atStorageRoot = root == null ||
+            folder.absolutePath == root.directory.absolutePath
+        if (atStorageRoot) {
+            onFolderChanged(null)
+            return
+        }
         val parent = folder.parentFile
-        onFolderChanged(if (roots.any { it.directory == parent }) null else parent?.absolutePath)
+        onFolderChanged(
+            if (parent != null && isInside(root.directory, parent)) parent.absolutePath else null
+        )
     }
 
     BackHandler(enabled = currentFolder != null) {
@@ -964,31 +1243,27 @@ private fun PdfFileBrowserScreen(
                 }
             }
 
-            if (atRoot && filter == FileKindFilter.PDF) {
-                Text(
-                    stringResource(R.string.android_media_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-
             when {
                 isLoading || (showAllPdfs && isLoadingAll) -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 }
-                error != null -> {
+                folderError || allPdfsError -> {
                     Text(
-                        error.orEmpty(),
+                        folderOpenError,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(16.dp),
                     )
                 }
                 showAllPdfs -> {
                     if (visibleAllPdfs.isEmpty()) {
-                        EmptyFolderMessage(stringResource(R.string.all_pdfs_empty))
+                        EmptyFolderMessage(
+                            stringResource(
+                                if (query.isBlank()) R.string.all_pdfs_empty
+                                else R.string.search_files_no_results
+                            ),
+                        )
                     } else {
                         LazyColumn(
                             contentPadding = PaddingValues(top = 8.dp, bottom = 20.dp),
@@ -1022,7 +1297,10 @@ private fun PdfFileBrowserScreen(
                         if (visibleRoots.isEmpty()) {
                             item {
                                 Text(
-                                    stringResource(R.string.folder_open_error),
+                                    stringResource(
+                                        if (query.isBlank()) R.string.folder_open_error
+                                        else R.string.search_files_no_results
+                                    ),
                                     modifier = Modifier.padding(16.dp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1031,7 +1309,12 @@ private fun PdfFileBrowserScreen(
                     }
                 }
                 visibleEntries.isEmpty() -> {
-                    EmptyFolderMessage(stringResource(R.string.folder_empty))
+                    EmptyFolderMessage(
+                        stringResource(
+                            if (query.isBlank()) R.string.folder_empty
+                            else R.string.search_files_no_results
+                        ),
+                    )
                 }
                 else -> {
                     LazyColumn(
@@ -1185,12 +1468,7 @@ private fun SortMenu(
                 text = {
                     Text(
                         stringResource(
-                            when (option) {
-                                PdfFileSort.NAME_ASC -> R.string.sort_name_asc
-                                PdfFileSort.NAME_DESC -> R.string.sort_name_desc
-                                PdfFileSort.NEWEST -> R.string.sort_newest
-                                PdfFileSort.LARGEST -> R.string.sort_largest
-                            },
+                            sortLabel(option),
                         ),
                     )
                 },
@@ -1203,6 +1481,13 @@ private fun SortMenu(
             )
         }
     }
+}
+
+private fun sortLabel(sort: PdfFileSort): Int = when (sort) {
+    PdfFileSort.LAST_OPENED -> R.string.sort_last_opened
+    PdfFileSort.NAME_ASC -> R.string.sort_name_asc
+    PdfFileSort.NEWEST -> R.string.sort_newest
+    PdfFileSort.LARGEST -> R.string.sort_largest
 }
 
 @Composable
@@ -1310,13 +1595,21 @@ private fun PdfStorageEntryRow(
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            if (entry.isDirectory) Icons.Filled.Folder else Icons.Filled.PictureAsPdf,
-            contentDescription = null,
-            tint = if (entry.isDirectory) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.error,
-            modifier = Modifier.size(28.dp),
-        )
+        if (entry.isDirectory) {
+            Icon(Icons.Filled.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+        } else {
+            val context = LocalContext.current
+            val uri = remember(entry.file) {
+                runCatching {
+                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", entry.file)
+                }.getOrNull()
+            }
+            if (uri != null) {
+                PdfThumbnail(LocalThumbnailRepository.current, uri, Modifier.size(36.dp))
+            } else {
+                Icon(Icons.Filled.PictureAsPdf, null, modifier = Modifier.size(36.dp))
+            }
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -1378,6 +1671,7 @@ private fun SettingsScreen(
     onTextSizeChanged: (TextSizeMode) -> Unit,
     onCheckUpdate: () -> Unit,
     onRequestStorageAccess: () -> Unit,
+    onOpenDefaultAppSettings: () -> Unit,
     onOpenSupport: () -> Unit,
     onOpenChangelog: () -> Unit,
 ) {
@@ -1395,6 +1689,7 @@ private fun SettingsScreen(
             onTextSizeChanged = onTextSizeChanged,
             onCheckUpdate = onCheckUpdate,
             onRequestStorageAccess = onRequestStorageAccess,
+            onOpenDefaultAppSettings = onOpenDefaultAppSettings,
             onOpenSupport = onOpenSupport,
             onOpenChangelog = onOpenChangelog,
         )
@@ -1414,10 +1709,10 @@ private fun SettingsRootScreen(
     onTextSizeChanged: (TextSizeMode) -> Unit,
     onCheckUpdate: () -> Unit,
     onRequestStorageAccess: () -> Unit,
+    onOpenDefaultAppSettings: () -> Unit,
     onOpenSupport: () -> Unit,
     onOpenChangelog: () -> Unit,
 ) {
-    var showDefaultPdfInfo by remember { mutableStateOf(false) }
     var showLicenseInfo by remember { mutableStateOf(false) }
 
     val updateSubtitle = when {
@@ -1551,7 +1846,7 @@ private fun SettingsRootScreen(
                     icon = Icons.Filled.Visibility,
                     title = stringResource(R.string.default_pdf_title),
                     subtitle = stringResource(R.string.default_pdf_hint),
-                    onClick = { showDefaultPdfInfo = true },
+                    onClick = onOpenDefaultAppSettings,
                 ) {
                     Icon(Icons.Filled.ChevronRight, contentDescription = null)
                 }
@@ -1563,6 +1858,8 @@ private fun SettingsRootScreen(
                 title = stringResource(R.string.settings_files),
                 icon = Icons.Filled.Storage,
             ) {
+                ClearThumbnailCache(LocalThumbnailRepository.current)
+                HorizontalDivider()
                 SettingsRow(
                     icon = Icons.Filled.FolderOpen,
                     title = stringResource(R.string.storage_access_row),
@@ -1586,13 +1883,6 @@ private fun SettingsRootScreen(
                         )
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Text(
-                    stringResource(R.string.android_media_note),
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
 
@@ -1652,7 +1942,7 @@ private fun SettingsRootScreen(
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsRow(
-                    icon = Icons.Filled.Description,
+                    icon = Icons.Filled.MenuBook,
                     title = stringResource(R.string.license_title),
                     subtitle = stringResource(R.string.license_hint),
                     onClick = { showLicenseInfo = true },
@@ -1678,19 +1968,6 @@ private fun SettingsRootScreen(
                 }
             }
         }
-    }
-
-    if (showDefaultPdfInfo) {
-        AlertDialog(
-            onDismissRequest = { showDefaultPdfInfo = false },
-            title = { Text(stringResource(R.string.default_pdf_title)) },
-            text = { Text(stringResource(R.string.default_pdf_message)) },
-            confirmButton = {
-                TextButton(onClick = { showDefaultPdfInfo = false }) {
-                    Text(stringResource(R.string.close))
-                }
-            },
-        )
     }
 
     if (showLicenseInfo) {
@@ -1739,9 +2016,7 @@ private fun SettingsCard(
             )
         }
         ElevatedCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize(),
+            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
         ) {
             Column(
@@ -1806,24 +2081,95 @@ private fun PdfReaderScreen(
     onShare: () -> Unit,
     onPageChanged: (Uri, Int) -> Unit,
 ) {
-    val viewerState = remember { PdfViewerState() }
+    val viewerState = remember(uri, document) { PdfViewerState() }
+    var resumeState by remember(uri, document) { mutableStateOf(PdfResumeState(resumePage)) }
     val scope = rememberCoroutineScope()
     var searchVisible by rememberSaveable(uri.toString()) { mutableStateOf(false) }
     var searchQuery by rememberSaveable(uri.toString()) { mutableStateOf("") }
     var searchInProgress by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf(false) }
+    var searchUnsupported by remember { mutableStateOf(false) }
     var resultPages by remember { mutableStateOf<List<Int>?>(null) }
     val pageCount = document?.pageCount ?: 0
-    val currentPage = if (pageCount > 0) viewerState.firstVisiblePage.coerceIn(0, pageCount - 1) else 0
+    var currentPage by remember(uri, document) { mutableIntStateOf(0) }
+    var pendingPage by remember(uri, document) { mutableStateOf<Int?>(null) }
 
-    LaunchedEffect(document, uri) {
-        if (document != null && pageCount > 0) {
-            viewerState.scrollToPage(resumePage.coerceIn(0, pageCount - 1))
+    fun goToPage(page: Int) {
+        if (!resumeState.applied || pageCount <= 0) return
+        val target = page.coerceIn(0, pageCount - 1)
+        currentPage = target
+        pendingPage = target
+        scope.launch {
+            viewerState.scrollToPage(target)
+            delay(600)
+            if (pendingPage == target) pendingPage = null
         }
     }
 
-    LaunchedEffect(document, uri, currentPage) {
-        if (document != null) {
+    fun performSearch() {
+        val activeDocument = document ?: return
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            resultPages = emptyList()
+            return
+        }
+        if (searchInProgress) return
+        scope.launch {
+            searchInProgress = true
+            searchError = false
+            try {
+                val matches = withContext(Dispatchers.IO) {
+                    activeDocument.searchDocument(query, 0 until activeDocument.pageCount)
+                }
+                resultPages = buildList {
+                    for (index in 0 until matches.size()) {
+                        add(matches.keyAt(index) + 1)
+                    }
+                }
+            } catch (failure: UnsupportedOperationException) {
+                // Layanan PDF sistem baru mendukung pencarian teks pada Android 12L+/SDK ext 13.
+                Log.i(TAG, "Pencarian teks PDF tidak didukung perangkat ini", failure)
+                searchUnsupported = true
+            } catch (failure: Exception) {
+                Log.e(TAG, "Pencarian teks PDF gagal", failure)
+                searchError = true
+            } finally {
+                searchInProgress = false
+            }
+        }
+    }
+
+    LaunchedEffect(document, uri, resumeState.contentLoaded) {
+        if (document == null) return@LaunchedEffect
+        val target = resumeState.targetPage(pageCount) ?: return@LaunchedEffect
+        currentPage = target
+        pendingPage = target
+        if (target > 0) viewerState.scrollToPage(target)
+        resumeState = resumeState.copy(applied = true)
+        delay(600)
+        if (pendingPage == target) pendingPage = null
+    }
+
+    // firstVisiblePage menghitung potongan halaman; koreksi gestur tidak boleh menimpa target navigasi.
+    LaunchedEffect(viewerState.firstVisiblePage, viewerState.firstVisiblePageOffset) {
+        if (!resumeState.applied || pendingPage != null) return@LaunchedEffect
+        val first = viewerState.firstVisiblePage
+        if (first !in 0 until pageCount) return@LaunchedEffect
+        var effective = first
+        if (viewerState.gestureState != PdfViewerState.GESTURE_STATE_IDLE) {
+            val top = viewerState.getVisiblePageOffset(first)
+            val next = viewerState.getVisiblePageOffset(first + 1)
+            if (top != null && next != null && top.y < 0f) {
+                val pageHeight = next.y - top.y
+                if (pageHeight > 0f && -top.y > pageHeight / 2f) effective = first + 1
+            }
+        }
+        effective = effective.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        if (effective != currentPage) currentPage = effective
+    }
+
+    LaunchedEffect(document, uri, currentPage, resumeState.applied) {
+        if (document != null && resumeState.applied) {
             delay(450)
             onPageChanged(uri, currentPage)
         }
@@ -1876,12 +2222,8 @@ private fun PdfReaderScreen(
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         IconButton(
-                            onClick = {
-                                scope.launch {
-                                    viewerState.scrollToPage((currentPage - 1).coerceAtLeast(0))
-                                }
-                            },
-                            enabled = currentPage > 0,
+                            onClick = { goToPage(currentPage - 1) },
+                            enabled = resumeState.applied && currentPage > 0,
                         ) {
                             Icon(Icons.Filled.ChevronLeft, contentDescription = stringResource(R.string.previous_page))
                         }
@@ -1891,12 +2233,8 @@ private fun PdfReaderScreen(
                             modifier = Modifier.padding(horizontal = 18.dp),
                         )
                         IconButton(
-                            onClick = {
-                                scope.launch {
-                                    viewerState.scrollToPage((currentPage + 1).coerceAtMost(pageCount - 1))
-                                }
-                            },
-                            enabled = currentPage < pageCount - 1,
+                            onClick = { goToPage(currentPage + 1) },
+                            enabled = resumeState.applied && currentPage < pageCount - 1,
                         ) {
                             Icon(Icons.Filled.ChevronRight, contentDescription = stringResource(R.string.next_page))
                         }
@@ -1925,34 +2263,10 @@ private fun PdfReaderScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { performSearch() }),
                     )
                     IconButton(
-                        onClick = {
-                            val activeDocument = document ?: return@IconButton
-                            val query = searchQuery.trim()
-                            if (query.isEmpty()) {
-                                resultPages = emptyList()
-                                return@IconButton
-                            }
-                            scope.launch {
-                                searchInProgress = true
-                                searchError = false
-                                try {
-                                    val matches = withContext(Dispatchers.IO) {
-                                        activeDocument.searchDocument(
-                                            query,
-                                            0 until activeDocument.pageCount,
-                                        )
-                                    }
-                                    resultPages = (0 until matches.size())
-                                        .map { matches.keyAt(it) + 1 }
-                                } catch (failure: Exception) {
-                                    searchError = true
-                                } finally {
-                                    searchInProgress = false
-                                }
-                            }
-                        },
+                        onClick = { performSearch() },
                     ) {
                         if (searchInProgress) {
                             CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -1974,6 +2288,7 @@ private fun PdfReaderScreen(
                         pdfDocument = document,
                         state = viewerState,
                         modifier = Modifier.fillMaxSize(),
+                        onFirstContentLoad = { resumeState = resumeState.copy(contentLoaded = true) },
                     )
                 } else if (loading) {
                     Column(
@@ -2016,7 +2331,7 @@ private fun PdfReaderScreen(
                             TextButton(
                                 onClick = {
                                     resultPages = null
-                                    scope.launch { viewerState.scrollToPage(page - 1) }
+                                    goToPage(page - 1)
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
@@ -2049,6 +2364,19 @@ private fun PdfReaderScreen(
             },
         )
     }
+
+    if (searchUnsupported) {
+        AlertDialog(
+            onDismissRequest = { searchUnsupported = false },
+            title = { Text(stringResource(R.string.search_unsupported_title)) },
+            text = { Text(stringResource(R.string.search_unsupported_message)) },
+            confirmButton = {
+                TextButton(onClick = { searchUnsupported = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            },
+        )
+    }
 }
 
 private fun displayName(context: Context, uri: Uri): String {
@@ -2064,6 +2392,12 @@ private fun displayName(context: Context, uri: Uri): String {
         }
     }.getOrNull()
     return name ?: uri.lastPathSegment ?: context.getString(R.string.file_name_unavailable)
+}
+
+private fun isInside(root: File, target: File): Boolean {
+    val rootPath = root.absoluteFile.toPath().normalize().toString()
+    val targetPath = target.absoluteFile.toPath().normalize().toString()
+    return targetPath == rootPath || targetPath.startsWith(rootPath + File.separator)
 }
 
 private fun formatFileSize(bytes: Long): String {

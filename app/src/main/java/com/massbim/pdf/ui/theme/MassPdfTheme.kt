@@ -1,4 +1,4 @@
-// Tema visual Mass PDF: palet Kirmizi, font Plus Jakarta Sans, dan skala teks UI.
+// Tema visual Mass PDF: terang Kirmizi, gelap netral, font Plus Jakarta Sans, skala teks UI.
 // Ubah warna di LightColors/DarkColors; ukuran teks hanya memengaruhi antarmuka, bukan isi PDF.
 
 package com.massbim.pdf.ui.theme
@@ -91,30 +91,37 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFFFB4AB),
-    onPrimary = Color(0xFF690005),
-    primaryContainer = Color(0xFF93000A),
+    // Tema gelap netral: latar hitam-abu tanpa rona pink, aksen merah #FF5A4E.
+    // Nilai dipilih agar kontras teks minimal 4,5:1 di atas latar dan kartu.
+    primary = Color(0xFFFF5A4E),
+    onPrimary = Color(0xFF2A0A07),
+    primaryContainer = Color(0xFF4A1512),
     onPrimaryContainer = Color(0xFFFFDAD6),
-    secondary = Color(0xFFE4BDB8),
-    onSecondary = Color(0xFF422A26),
-    secondaryContainer = Color(0xFF5A403B),
-    onSecondaryContainer = Color(0xFFF2E3DF),
+    secondary = Color(0xFFCFCFCF),
+    onSecondary = Color(0xFF1A1A1A),
+    secondaryContainer = Color(0xFF3A3A3A),
+    onSecondaryContainer = Color(0xFFECECEC),
     tertiary = Color(0xFFF5B971),
     onTertiary = Color(0xFF46280A),
-    tertiaryContainer = Color(0xFF5F3A10),
+    tertiaryContainer = Color(0xFF4A3411),
     onTertiaryContainer = Color(0xFFFFDDB6),
-    background = Color(0xFF141010),
-    onBackground = Color(0xFFF0E5E2),
-    surface = Color(0xFF141010),
-    onSurface = Color(0xFFF0E5E2),
-    surfaceVariant = Color(0xFF3A2E2B),
-    onSurfaceVariant = Color(0xFFD8C2BD),
-    outline = Color(0xFF8A746F),
-    outlineVariant = Color(0xFF4A3B38),
+    background = Color(0xFF121212),
+    onBackground = Color(0xFFECECEC),
+    surface = Color(0xFF121212),
+    onSurface = Color(0xFFECECEC),
+    surfaceVariant = Color(0xFF333333),
+    onSurfaceVariant = Color(0xFFC7C7C7),
+    outline = Color(0xFF7A7A7A),
+    outlineVariant = Color(0xFF3D3D3D),
     error = Color(0xFFFF897D),
-    onError = Color(0xFF690005),
-    errorContainer = Color(0xFF93000A),
+    onError = Color(0xFF4A0B06),
+    errorContainer = Color(0xFF5A1A14),
     onErrorContainer = Color(0xFFFFDAD6),
+    surfaceContainerLowest = Color(0xFF0E0E0E),
+    surfaceContainerLow = Color(0xFF171717),
+    surfaceContainer = Color(0xFF1C1C1C),
+    surfaceContainerHigh = Color(0xFF262626),
+    surfaceContainerHighest = Color(0xFF303030),
 )
 
 @Composable
@@ -159,5 +166,3 @@ fun MassPdfTheme(
         )
     }
 }
-
-val AccentAmber = Color(0xFFB45309)

@@ -1,12 +1,17 @@
 package com.massbim.pdf.storage
 
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.util.Locale
 
-data class PdfStorageRoot(val directory: File, val label: String)
+data class PdfStorageRoot(val directory: File, val label: String, val isRemovable: Boolean)
 
 data class PdfStorageEntry(
     val file: File,
@@ -16,13 +21,21 @@ data class PdfStorageEntry(
 )
 
 enum class PdfFileSort {
+    LAST_OPENED,
     NAME_ASC,
-    NAME_DESC,
     NEWEST,
     LARGEST,
 }
 
+/**
+ * Daftar PDF dan folder dibaca dari indeks MediaStore, bukan pemindaian rekursif,
+ * agar folder besar tidak menghabiskan waktu setiap kali dibuka. Indeks disimpan
+ * di memori sampai ada perubahan file atau layar dibuka ulang.
+ */
 class PdfFileRepository(private val context: Context) {
+    @Volatile
+    private var cachedIndex: PdfIndex? = null
+
     fun storageRoots(): List<PdfStorageRoot> {
         requireStorageAccess()
         return context.getExternalFilesDirs(null)
@@ -31,71 +44,45 @@ class PdfFileRepository(private val context: Context) {
             .distinctBy { it.directory.path }
     }
 
-    fun list(directory: File, sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> {
+    fun invalidateIndex() {
+        cachedIndex = null
+    }
+
+    fun list(
+        directory: File,
+        sort: PdfFileSort = PdfFileSort.NAME_ASC,
+        recentUris: List<String> = emptyList(),
+    ): List<PdfStorageEntry> {
         requireStorageAccess()
-        val root = requireSafePath(directory)
+        requireSafePath(directory)
         if (!directory.isDirectory || !directory.canRead()) {
             throw IOException("Folder tidak dapat dibaca")
         }
-        val children = directory.listFiles() ?: throw IOException("Folder tidak dapat dibaca")
-        val directoriesWithPdf = mutableSetOf<String>()
-        collectPdfs(
-            directory = directory,
-            root = root,
-            depth = 0,
-            pdfs = mutableListOf(),
-            directoriesWithPdf = directoriesWithPdf,
-            budget = intArrayOf(SCAN_BUDGET),
-        )
-        val entries = children.asSequence()
-            .filterNot { PdfFileRules.isHidden(it.name) }
-            .filterNot { Files.isSymbolicLink(it.toPath()) }
-            .filter { PdfFileRules.isAndroidPathAllowed(relativeSegments(root, it)) }
-            .filter {
-                when {
-                    it.isDirectory -> directoriesWithPdf.contains(it.absolutePath)
-                    else -> it.isFile && PdfFileRules.isPdf(it.name)
-                }
-            }
-            .onEach { requireWithinRoot(root, it) }
-            .map {
-                PdfStorageEntry(
-                    file = it,
-                    isDirectory = it.isDirectory,
-                    sizeBytes = if (it.isFile) it.length() else 0L,
-                    modifiedAt = it.lastModified(),
+        val indexPath = pathKey(directory)
+        val index = index()
+        val entries = buildList {
+            index.childFolders[indexPath].orEmpty().forEach { folder ->
+                add(
+                    PdfStorageEntry(
+                        file = folder,
+                        isDirectory = true,
+                        sizeBytes = 0L,
+                        modifiedAt = folder.lastModified(),
+                    ),
                 )
             }
-            .toList()
-        return sorted(entries, sort)
+            index.pdfsByParent[indexPath].orEmpty().forEach { entry ->
+                add(entry)
+            }
+        }
+        return sorted(entries, sort, recentUris)
     }
 
-    /** Semua PDF di seluruh penyimpanan, dipakai filter "PDF" agar tidak perlu membuka folder. */
-    fun allPdfs(sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> {
-        requireStorageAccess()
-        val pdfs = mutableListOf<File>()
-        val directoriesWithPdf = mutableSetOf<String>()
-        val budget = intArrayOf(SCAN_BUDGET)
-        for (root in storageRoots()) {
-            collectPdfs(
-                directory = root.directory,
-                root = root.directory,
-                depth = 0,
-                pdfs = pdfs,
-                directoriesWithPdf = directoriesWithPdf,
-                budget = budget,
-            )
-        }
-        val entries = pdfs.distinctBy { it.absolutePath }.map {
-            PdfStorageEntry(
-                file = it,
-                isDirectory = false,
-                sizeBytes = it.length(),
-                modifiedAt = it.lastModified(),
-            )
-        }
-        return sorted(entries, sort)
-    }
+    /** Semua PDF dari seluruh penyimpanan yang diizinkan, dipakai filter "PDF". */
+    fun allPdfs(
+        sort: PdfFileSort = PdfFileSort.NAME_ASC,
+        recentUris: List<String> = emptyList(),
+    ): List<PdfStorageEntry> = sorted(index().pdfs, sort, recentUris)
 
     @Throws(IOException::class, SecurityException::class)
     fun renamePdf(file: File, requestedName: String): File {
@@ -118,6 +105,20 @@ class PdfFileRepository(private val context: Context) {
         ) {
             throw IOException("PDF tidak dapat diubah namanya")
         }
+        updateCachedIndex { pdfs ->
+            pdfs.filterNot { samePath(it.file, file) } + PdfStorageEntry(
+                file = destination,
+                isDirectory = false,
+                sizeBytes = destination.length(),
+                modifiedAt = destination.lastModified(),
+            )
+        }
+        MediaScannerConnection.scanFile(
+            context,
+            arrayOf(file.absolutePath, destination.absolutePath),
+            null,
+            null,
+        )
         return destination
     }
 
@@ -131,49 +132,144 @@ class PdfFileRepository(private val context: Context) {
         val parent = file.parentFile ?: throw IOException("Folder induk tidak ditemukan")
         requireWithinRoot(root, parent)
         if (!file.delete()) throw IOException("PDF tidak dapat dihapus")
+        updateCachedIndex { pdfs -> pdfs.filterNot { samePath(it.file, file) } }
+        MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
     }
 
-    private fun collectPdfs(
-        directory: File,
-        root: File,
-        depth: Int,
-        pdfs: MutableList<File>,
-        directoriesWithPdf: MutableSet<String>,
-        budget: IntArray,
-    ): Boolean {
-        if (depth > SCAN_DEPTH || budget[0] <= 0) return false
-        val children = directory.listFiles() ?: return false
-        budget[0] -= children.size
-        var hasPdf = false
-        for (child in children) {
-            if (child.isFile && PdfFileRules.isPdf(child.name)) {
-                pdfs.add(child)
-                hasPdf = true
+    private fun index(): PdfIndex {
+        cachedIndex?.let { return it }
+        return synchronized(this) {
+            cachedIndex ?: buildIndex().also { cachedIndex = it }
+        }
+    }
+
+    private fun buildIndex(): PdfIndex {
+        val roots = storageRoots()
+        val pdfs = mutableListOf<PdfStorageEntry>()
+        val seenPaths = mutableSetOf<String>()
+        val projection = arrayOf(
+            MediaStore.Files.FileColumns.DATA,
+            MediaStore.Files.FileColumns.DISPLAY_NAME,
+            MediaStore.Files.FileColumns.SIZE,
+            MediaStore.Files.FileColumns.DATE_MODIFIED,
+        )
+        val baseSelection =
+            "(${MediaStore.Files.FileColumns.MIME_TYPE}=? OR " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?)"
+        val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            "$baseSelection AND ${MediaStore.Files.FileColumns.IS_TRASHED}=0"
+        } else {
+            baseSelection
+        }
+        val arguments = arrayOf("application/pdf", "%.pdf")
+        val contentUri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+
+        context.contentResolver.query(
+            contentUri,
+            projection,
+            selection,
+            arguments,
+            null,
+        )?.use { cursor ->
+            val dataColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
+            val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+            val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+            val modifiedColumn =
+                cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+
+            while (cursor.moveToNext()) {
+                val path = cursor.getString(dataColumn) ?: continue
+                val name = cursor.getString(nameColumn) ?: continue
+                if (!PdfFileRules.isPdf(name) || PdfFileRules.isHidden(name)) continue
+
+                val file = File(path).absoluteFile.toPath().normalize().toFile()
+                val root = roots.firstOrNull { isWithin(it.directory, file) } ?: continue
+                val segments = relativeSegments(root.directory, file)
+                val directorySegments = segments.dropLast(1)
+                if (directorySegments.any { PdfFileRules.isHidden(it) }) continue
+                if (!PdfFileRules.isAndroidPathAllowed(directorySegments)) continue
+                if (!seenPaths.add(pathKey(file))) continue
+
+                pdfs += PdfStorageEntry(
+                    file = file,
+                    isDirectory = false,
+                    sizeBytes = cursor.getLong(sizeColumn),
+                    modifiedAt = cursor.getLong(modifiedColumn) * 1_000L,
+                )
             }
         }
-        for (child in children) {
-            if (!child.isDirectory) continue
-            if (PdfFileRules.isHidden(child.name)) continue
-            if (Files.isSymbolicLink(child.toPath())) continue
-            if (!isWithin(root, child)) continue
-            if (!PdfFileRules.isAndroidPathAllowed(relativeSegments(root, child))) continue
-            if (collectPdfs(child, root, depth + 1, pdfs, directoriesWithPdf, budget)) {
-                directoriesWithPdf.add(child.absolutePath)
-                hasPdf = true
+        return indexFrom(pdfs, roots.map { it.directory })
+    }
+
+    private fun indexFrom(
+        pdfs: List<PdfStorageEntry>,
+        rootDirectories: List<File>,
+    ): PdfIndex {
+        val pdfsByParent = mutableMapOf<String, MutableList<PdfStorageEntry>>()
+        val folders = mutableSetOf<File>()
+
+        for (entry in pdfs) {
+            val parent = entry.file.parentFile ?: continue
+            pdfsByParent.getOrPut(pathKey(parent)) { mutableListOf() }.add(entry)
+
+            val root = rootDirectories.firstOrNull { isWithin(it, entry.file) } ?: continue
+            var folder = parent
+            while (!samePath(folder, root) && isWithin(root, folder)) {
+                folders.add(folder)
+                folder = folder.parentFile ?: break
             }
         }
-        return hasPdf
+
+        val childFolders = mutableMapOf<String, MutableList<File>>()
+        for (folder in folders) {
+            val parent = folder.parentFile ?: continue
+            childFolders.getOrPut(pathKey(parent)) { mutableListOf() }.add(folder)
+        }
+
+        return PdfIndex(
+            pdfs = pdfs,
+            pdfsByParent = pdfsByParent,
+            childFolders = childFolders,
+        )
+    }
+
+    private inline fun updateCachedIndex(transform: (List<PdfStorageEntry>) -> List<PdfStorageEntry>) {
+        val current = cachedIndex ?: return
+        cachedIndex = indexFrom(
+            pdfs = transform(current.pdfs),
+            rootDirectories = storageRoots().map { it.directory },
+        )
     }
 
     private fun sorted(
         entries: List<PdfStorageEntry>,
         sort: PdfFileSort,
+        recentUris: List<String>,
     ): List<PdfStorageEntry> {
+        val nameOrder = compareBy<PdfStorageEntry> { it.file.name.lowercase(Locale.ROOT) }
+            .thenBy { it.file.name }
+            .thenBy { it.file.absolutePath }
         val valueOrder: Comparator<PdfStorageEntry> = when (sort) {
-            PdfFileSort.NAME_ASC -> compareBy { it.file.name.lowercase() }
-            PdfFileSort.NAME_DESC -> compareByDescending { it.file.name.lowercase() }
-            PdfFileSort.NEWEST -> compareByDescending { it.modifiedAt }
-            PdfFileSort.LARGEST -> compareByDescending { it.sizeBytes }
+            PdfFileSort.LAST_OPENED -> {
+                val uriRanks = mutableMapOf<String, Int>()
+                recentUris.forEachIndexed { index, uri -> uriRanks.putIfAbsent(uri, index) }
+                val ranks = entries.associateWith { entry ->
+                    if (entry.isDirectory) {
+                        Int.MAX_VALUE
+                    } else {
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            entry.file,
+                        ).toString()
+                        uriRanks[uri] ?: Int.MAX_VALUE
+                    }
+                }
+                compareBy<PdfStorageEntry> { ranks.getValue(it) }.then(nameOrder)
+            }
+            PdfFileSort.NAME_ASC -> nameOrder
+            PdfFileSort.NEWEST -> compareByDescending<PdfStorageEntry> { it.modifiedAt }.then(nameOrder)
+            PdfFileSort.LARGEST -> compareByDescending<PdfStorageEntry> { it.sizeBytes }.then(nameOrder)
         }
         return entries.sortedWith(compareBy<PdfStorageEntry> { !it.isDirectory }.then(valueOrder))
     }
@@ -186,12 +282,12 @@ class PdfFileRepository(private val context: Context) {
 
         val root = File(path.substring(0, markerIndex)).canonicalFile
         if (!root.isDirectory || !root.canRead()) return null
-        val label = if (Environment.isExternalStorageRemovable(root)) {
-            "Penyimpanan eksternal"
-        } else {
-            "Penyimpanan perangkat"
-        }
-        return PdfStorageRoot(root, label)
+        val removable = Environment.isExternalStorageRemovable(root)
+        return PdfStorageRoot(
+            directory = root,
+            label = if (removable) "Penyimpanan eksternal" else "Penyimpanan perangkat",
+            isRemovable = removable,
+        )
     }
 
     private fun requireSafePath(target: File): File {
@@ -229,10 +325,16 @@ class PdfFileRepository(private val context: Context) {
     }
 
     private fun isWithin(root: File, target: File): Boolean {
-        val rootPath = root.path.trimEnd(File.separatorChar)
-        val targetPath = target.path
+        val rootPath = root.absoluteFile.toPath().normalize().toString()
+        val targetPath = target.absoluteFile.toPath().normalize().toString()
         return targetPath == rootPath || targetPath.startsWith(rootPath + File.separator)
     }
+
+    private fun samePath(first: File, second: File): Boolean =
+        pathKey(first) == pathKey(second)
+
+    private fun pathKey(file: File): String =
+        file.absoluteFile.toPath().normalize().toString()
 
     private fun requireStorageAccess() {
         if (!StoragePermissionManager.hasAccess(context)) {
@@ -240,8 +342,9 @@ class PdfFileRepository(private val context: Context) {
         }
     }
 
-    private companion object {
-        const val SCAN_DEPTH = 8
-        const val SCAN_BUDGET = 3000
-    }
+    private data class PdfIndex(
+        val pdfs: List<PdfStorageEntry>,
+        val pdfsByParent: Map<String, List<PdfStorageEntry>>,
+        val childFolders: Map<String, List<File>>,
+    )
 }

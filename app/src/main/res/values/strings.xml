@@ -32,11 +32,13 @@
     <string name="search_results_title">%1$d halaman ditemukan</string>
     <string name="close">Tutup</string>
     <string name="search_error">Pencarian teks PDF gagal.</string>
+    <string name="search_unsupported_title">Pencarian teks belum tersedia</string>
+    <string name="search_unsupported_message">Pencarian kata di dalam PDF didukung Android 12L atau lebih baru. Di perangkat ini Anda tetap bisa membaca PDF dan berpindah halaman.</string>
     <string name="loading_pdf">Menyiapkan PDF…</string>
     <string name="open_pdf_error">Tidak dapat membuka PDF ini. File mungkin tidak tersedia atau formatnya tidak didukung.</string>
     <string name="file_name_unavailable">Dokumen PDF</string>
     <string name="file_access_title">Akses penyimpanan diperlukan</string>
-    <string name="file_access_message">Mass PDF butuh izin penyimpanan dari Android untuk menampilkan dan mengelola PDF. File tetap diproses di HP dan tidak diunggah. Folder WhatsApp (Android/media) bisa dibuka; folder sistem Android lainnya tetap terlindungi.</string>
+    <string name="file_access_message">Mass PDF butuh izin penyimpanan untuk menampilkan dan mengelola PDF di perangkat ini. File tidak diunggah ke mana pun.</string>
     <string name="enable_access">Lanjutkan ke pengaturan</string>
     <string name="access_denied">Akses belum diizinkan. Anda tetap dapat membuka PDF melalui pemilih file.</string>
     <string name="storage_internal">Penyimpanan perangkat</string>
@@ -60,8 +62,6 @@
     <string name="appearance">Tampilan</string>
     <string name="default_pdf_title">Pembuka PDF default</string>
     <string name="default_pdf_message">Saat Android menampilkan pilihan aplikasi untuk membuka PDF, pilih Mass PDF lalu pilih “Selalu” jika ingin menjadikannya default. Pengaturan default dikendalikan Android.</string>
-    <string name="storage_policy_title">Tentang akses file</string>
-    <string name="storage_policy_message">Mass PDF hanya menampilkan PDF dari lokasi yang diizinkan. Folder WhatsApp (Android/media) bisa dibuka; folder sistem Android lainnya tetap terlindungi.</string>
     <string name="update_available_title">Pembaruan tersedia</string>
     <string name="update_available_message">Mass PDF %1$s sudah siap dipasang. Unduh untuk mendapatkan perbaikan dan fitur terbaru.</string>
     <string name="download">Unduh</string>
@@ -79,12 +79,22 @@
     <string name="filter_folder">Folder</string>
     <string name="sort_files">Urutkan</string>
     <string name="sort_name_asc">Nama A–Z</string>
-    <string name="sort_name_desc">Nama Z–A</string>
+    <string name="sort_last_opened">Terakhir dibuka</string>
+    <string name="all_pinned">Semua yang disematkan</string>
+    <string name="see_all">Lihat semua</string>
+    <string name="library_search">Cari nama PDF</string>
+    <string name="pinned_page">%1$d / %2$d · Geser untuk melihat lainnya</string>
+    <string name="cache_clear">Hapus cache thumbnail</string>
+    <string name="cache_clearing">Menghapus cache…</string>
+    <string name="cache_description">Hanya gambar pratinjau yang dihapus. PDF dan riwayat tetap tersimpan. Pratinjau dibuat ulang saat diperlukan.</string>
+    <string name="cache_cleared">Cache thumbnail sudah dihapus. PDF dan riwayat tidak berubah.</string>
+    <string name="cache_clear_failed">Sebagian cache belum dapat dihapus. Coba lagi.</string>
     <string name="sort_newest">Terbaru</string>
     <string name="sort_largest">Ukuran terbesar</string>
     <string name="all_pdfs_title">Semua PDF</string>
     <string name="all_pdfs_empty">Belum ada PDF yang ditemukan di penyimpanan ini.</string>
-    <string name="android_media_note">Folder WhatsApp (Android/media) bisa dibuka. Folder sistem lain tetap terlindungi.</string>
+    <string name="search_files_no_results">Tidak ada file yang cocok dengan pencarian.</string>
+    <string name="pinned_scroll_hint">Geser untuk melihat lebih banyak</string>
 
     <string name="text_size_title">Ukuran teks</string>
     <string name="text_size_system">Ikuti sistem</string>
@@ -113,7 +123,7 @@
     <string name="app_version_label">Versi %1$s</string>
     <string name="version_history">Riwayat versi</string>
     <string name="version_history_hint">Perubahan di setiap versi</string>
-    <string name="default_pdf_hint">Dikelola oleh Android</string>
+    <string name="default_pdf_hint">Buka pengaturan aplikasi default Android</string>
     <string name="download_update">Unduh pembaruan</string>
 
     <string name="changelog_intro">Ringkasan perubahan terbaru, ditulis sederhana agar mudah diikuti.</string>
@@ -123,6 +133,19 @@
     <string name="changelog_tag_new">Baru</string>
     <string name="changelog_tag_improved">Peningkatan</string>
     <string name="changelog_tag_fixed">Perbaikan</string>
+    <string name="changelog_expand">Buka rincian perubahan</string>
+    <string name="changelog_collapse">Tutup rincian perubahan</string>
+    <plurals name="changelog_entry_count">
+        <item quantity="other">%d perubahan</item>
+    </plurals>
+    <string name="changelog_013_1">Thumbnail halaman pertama PDF tampil di Beranda dan daftar file.</string>
+    <string name="changelog_013_2">Disematkan bisa digeser, empat per halaman, dengan halaman Lihat semua.</string>
+    <string name="changelog_013_3">Pilihan urutan: terakhir dibuka, nama, tanggal, atau ukuran file.</string>
+    <string name="changelog_013_4">Cache thumbnail bisa dihapus tanpa menghapus PDF dan riwayat.</string>
+    <string name="changelog_013_5">Browser file memakai indeks MediaStore sehingga folder besar lebih cepat dibuka.</string>
+    <string name="changelog_013_6">Halaman terakhir tidak lagi kembali ke awal saat PDF dimuat lambat.</string>
+    <string name="changelog_013_7">Formulir dukungan memakai daftar kategori dan pengiriman email yang lebih andal.</string>
+    <string name="changelog_013_8">Ukuran aplikasi rilis lebih kecil setelah optimasi R8.</string>
     <string name="changelog_012_1">Tampilan baru dengan warna Kirmizi yang tegas.</string>
     <string name="changelog_012_2">Huruf Plus Jakarta Sans, lebih nyaman dibaca.</string>
     <string name="changelog_012_3">Ukuran teks bisa diatur: kecil, standar, atau besar.</string>
@@ -156,17 +179,14 @@
     <string name="support_description_counter">%1$d/%2$d karakter</string>
     <string name="support_description_min">Minimal %1$d karakter.</string>
     <string name="support_category_required">Pilih kategori laporan.</string>
-    <string name="support_attachment">Tangkapan layar (opsional)</string>
-    <string name="support_attach_add">Tambah tangkapan layar</string>
-    <string name="support_attach_ready">Tangkapan layar siap dilampirkan</string>
-    <string name="support_attach_remove">Hapus lampiran</string>
+    <string name="support_category_select">Pilih kategori</string>
+    <string name="support_attachment_notice">Ingin menyertakan gambar atau tangkapan layar? Tekan Kirim laporan lebih dulu, lalu lampirkan file-nya langsung di aplikasi email.</string>
     <string name="support_email_notice">Laporan dikirim ke %1$s lewat aplikasi email Anda.</string>
     <string name="support_device_notice">Info perangkat dan versi aplikasi ikut disertakan otomatis.</string>
     <string name="support_send">Kirim laporan</string>
     <string name="support_copy">Salin laporan</string>
     <string name="support_copied">Laporan disalin ke papan klip.</string>
     <string name="support_no_email">Tidak ada aplikasi email. Laporan disalin ke papan klip.</string>
-    <string name="support_chooser">Kirim laporan</string>
     <string name="support_subject">%1$s – Mass PDF %2$s</string>
     <string name="support_body_category">Kategori: %1$s</string>
     <string name="support_body_device">Perangkat: %1$s</string>

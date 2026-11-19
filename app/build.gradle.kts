@@ -21,9 +21,9 @@ android {
         minSdk = 28
         targetSdk = 36
         // Workflow rilis mengisi nomor versi dari tag agar update dapat dipasang di atas versi lama.
-        versionCode = providers.environmentVariable("ANDROID_VERSION_CODE").orNull?.toIntOrNull() ?: 3
+        versionCode = providers.environmentVariable("ANDROID_VERSION_CODE").orNull?.toIntOrNull() ?: 4
         versionName = providers.environmentVariable("ANDROID_VERSION_NAME").orNull
-            ?.removePrefix("v") ?: "0.1.2"
+            ?.removePrefix("v") ?: "0.1.3"
     }
 
     signingConfigs {
@@ -48,7 +48,13 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = false
+            // R8 dan penyusutan resource memangkas ikon serta kode Compose yang tidak dipakai.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 

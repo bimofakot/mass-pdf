@@ -1,3 +1,6 @@
+// Layar Dukungan: pilih kategori dari dropdown, tulis laporan, kirim lewat aplikasi email.
+// Kategori ada di enum SupportCategory; teks di strings.xml dan alamat email di SUPPORT_EMAIL.
+
 package com.massbim.pdf.ui
 
 import android.content.ActivityNotFoundException
@@ -8,42 +11,32 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +68,7 @@ private enum class SupportCategory(
     OTHER(R.string.support_category_other, 80, R.string.support_description_other_hint),
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SupportScreen(
     modifier: Modifier,
@@ -84,7 +77,7 @@ internal fun SupportScreen(
     val context = LocalContext.current
     var categoryName by rememberSaveable { mutableStateOf<String?>(null) }
     var description by rememberSaveable { mutableStateOf("") }
-    var screenshotUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var categoryMenuOpen by rememberSaveable { mutableStateOf(false) }
 
     val category = categoryName?.let { saved ->
         runCatching { SupportCategory.valueOf(saved) }.getOrNull()
@@ -104,7 +97,6 @@ internal fun SupportScreen(
     val sendSubject = stringResource(R.string.support_subject, selectedLabel, appVersion)
     val copyCategory = selectedLabel.ifBlank { stringResource(R.string.support_category_label) }
     val copySubject = stringResource(R.string.support_subject, copyCategory, appVersion)
-    val chooserTitle = stringResource(R.string.support_chooser)
 
     fun currentReport(): String = buildString {
         append(description.trim())
@@ -113,12 +105,6 @@ internal fun SupportScreen(
         appendLine(deviceLine)
         appendLine(androidLine)
         append(appLine)
-    }
-
-    val screenshotPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) screenshotUri = uri.toString()
     }
 
     Column(
@@ -140,21 +126,41 @@ internal fun SupportScreen(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ExposedDropdownMenuBox(
+                expanded = categoryMenuOpen,
+                onExpandedChange = { categoryMenuOpen = it },
             ) {
-                SupportCategory.values().forEach { item ->
-                    FilterChip(
-                        selected = category == item,
-                        onClick = { categoryName = item.name },
-                        label = { Text(stringResource(item.labelRes)) },
-                        leadingIcon = if (category == item) {
-                            { Icon(Icons.Filled.Check, contentDescription = null) }
-                        } else {
-                            null
-                        },
-                    )
+                OutlinedTextField(
+                    value = selectedLabel,
+                    onValueChange = {},
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                    readOnly = true,
+                    singleLine = true,
+                    placeholder = { Text(stringResource(R.string.support_category_select)) },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryMenuOpen)
+                    },
+                )
+                ExposedDropdownMenu(
+                    expanded = categoryMenuOpen,
+                    onDismissRequest = { categoryMenuOpen = false },
+                ) {
+                    SupportCategory.values().forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(stringResource(item.labelRes)) },
+                            onClick = {
+                                categoryName = item.name
+                                categoryMenuOpen = false
+                            },
+                            leadingIcon = if (category == item) {
+                                { Icon(Icons.Filled.Check, contentDescription = null) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
             }
             if (category == null) {
@@ -193,61 +199,12 @@ internal fun SupportScreen(
             },
         )
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                stringResource(R.string.support_attachment),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (screenshotUri == null) {
-                FilledTonalButton(
-                    onClick = {
-                        screenshotPicker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    },
-                    modifier = Modifier.height(48.dp),
-                ) {
-                    Icon(Icons.Filled.AddPhotoAlternate, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.support_attach_add))
-                }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.Image,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Text(
-                            stringResource(R.string.support_attach_ready),
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 10.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        IconButton(onClick = { screenshotUri = null }) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = stringResource(R.string.support_attach_remove),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                stringResource(R.string.support_attachment_notice),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 stringResource(R.string.support_email_notice, SUPPORT_EMAIL),
                 style = MaterialTheme.typography.bodySmall,
@@ -266,8 +223,6 @@ internal fun SupportScreen(
                     context = context,
                     subject = sendSubject,
                     report = currentReport(),
-                    screenshot = screenshotUri?.let(Uri::parse),
-                    chooserTitle = chooserTitle,
                 )
             },
             modifier = Modifier
@@ -318,28 +273,20 @@ internal fun SupportScreen(
     }
 }
 
-private fun sendReport(
-    context: Context,
-    subject: String,
-    report: String,
-    screenshot: Uri?,
-    chooserTitle: String,
-) {
-    val intent = Intent(Intent.ACTION_SEND).apply {
+// ACTION_SENDTO + mailto membuka aplikasi email langsung, bukan lembar bagikan Android.
+private fun sendReport(context: Context, subject: String, report: String) {
+    val mailto = Uri.parse(
+        "mailto:$SUPPORT_EMAIL" +
+            "?subject=${Uri.encode(subject)}" +
+            "&body=${Uri.encode(report)}",
+    )
+    val intent = Intent(Intent.ACTION_SENDTO, mailto).apply {
         putExtra(Intent.EXTRA_EMAIL, arrayOf(SUPPORT_EMAIL))
         putExtra(Intent.EXTRA_SUBJECT, subject)
         putExtra(Intent.EXTRA_TEXT, report)
-        if (screenshot != null) {
-            type = "image/*"
-            putExtra(Intent.EXTRA_STREAM, screenshot)
-            clipData = ClipData.newUri(context.contentResolver, "screenshot", screenshot)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } else {
-            type = "text/plain"
-        }
     }
     try {
-        context.startActivity(Intent.createChooser(intent, chooserTitle))
+        context.startActivity(intent)
     } catch (error: ActivityNotFoundException) {
         copyReport(context, subject, report)
         Toast.makeText(context, R.string.support_no_email, Toast.LENGTH_LONG).show()

@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private val updateState = mutableStateOf<UpdatePrompt?>(null)
     private val updateCheckState = mutableStateOf(UpdateCheckState())
     private val storageSettingsErrorState = mutableStateOf(false)
+    private val defaultAppsInfoState = mutableStateOf(false)
 
     private lateinit var documents: DocumentRepository
     private val files by lazy { PdfFileRepository(applicationContext) }
@@ -98,11 +99,13 @@ class MainActivity : ComponentActivity() {
                     updatePrompt = updateState.value,
                     updateCheck = updateCheckState.value,
                     storageSettingsError = storageSettingsErrorState.value,
+                    defaultAppsInfo = defaultAppsInfoState.value,
                     fileRepository = files,
                     onOpenPdf = ::openPdf,
                     onCloseReader = ::closeReader,
                     onSharePdf = ::sharePdf,
                     onRequestStorageAccess = ::requestStorageAccess,
+                    onOpenDefaultAppSettings = ::openDefaultAppSettings,
                     onPageChanged = { uri, page ->
                         recentState.value = documents.savePage(uri, page)
                     },
@@ -139,12 +142,22 @@ class MainActivity : ComponentActivity() {
                     onDismissStorageSettingsError = {
                         storageSettingsErrorState.value = false
                     },
+                    onDismissDefaultAppsInfo = {
+                        defaultAppsInfoState.value = false
+                    },
                 )
             }
         }
 
         handleIncomingIntent(intent)
         checkForUpdate()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // launchMode singleTop: PDF dari aplikasi lain masuk ke instance yang sedang hidup.
+        setIntent(intent)
+        handleIncomingIntent(intent)
     }
 
     override fun onResume() {
@@ -288,6 +301,25 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             legacyStoragePermissionRequest.launch(StoragePermissionManager.legacyPermissions())
+        }
+    }
+
+    private fun openDefaultAppSettings() {
+        defaultAppsInfoState.value = false
+        try {
+            startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+        } catch (error: ActivityNotFoundException) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName"),
+                    )
+                )
+            } catch (fallbackError: ActivityNotFoundException) {
+                Log.e(TAG, "Pengaturan aplikasi default tidak tersedia", fallbackError)
+                defaultAppsInfoState.value = true
+            }
         }
     }
 
