@@ -32,11 +32,13 @@
     <string name="search_results_title">%1$d halaman ditemukan</string>
     <string name="close">Tutup</string>
     <string name="search_error">Pencarian teks PDF gagal.</string>
+    <string name="search_unsupported_title">Pencarian teks belum tersedia</string>
+    <string name="search_unsupported_message">Pencarian kata di dalam PDF didukung Android 12L atau lebih baru. Di perangkat ini Anda tetap bisa membaca PDF dan berpindah halaman.</string>
     <string name="loading_pdf">Menyiapkan PDF…</string>
     <string name="open_pdf_error">Tidak dapat membuka PDF ini. File mungkin tidak tersedia atau formatnya tidak didukung.</string>
     <string name="file_name_unavailable">Dokumen PDF</string>
     <string name="file_access_title">Akses penyimpanan diperlukan</string>
-    <string name="file_access_message">Mass PDF butuh izin penyimpanan dari Android untuk menampilkan dan mengelola PDF. File tetap diproses di HP dan tidak diunggah. Folder WhatsApp (Android/media) bisa dibuka; folder sistem Android lainnya tetap terlindungi.</string>
+    <string name="file_access_message">Mass PDF butuh izin penyimpanan untuk menampilkan dan mengelola PDF di perangkat ini. File tidak diunggah ke mana pun.</string>
     <string name="enable_access">Lanjutkan ke pengaturan</string>
     <string name="access_denied">Akses belum diizinkan. Anda tetap dapat membuka PDF melalui pemilih file.</string>
     <string name="storage_internal">Penyimpanan perangkat</string>
@@ -60,8 +62,6 @@
     <string name="appearance">Tampilan</string>
     <string name="default_pdf_title">Pembuka PDF default</string>
     <string name="default_pdf_message">Saat Android menampilkan pilihan aplikasi untuk membuka PDF, pilih Mass PDF lalu pilih “Selalu” jika ingin menjadikannya default. Pengaturan default dikendalikan Android.</string>
-    <string name="storage_policy_title">Tentang akses file</string>
-    <string name="storage_policy_message">Mass PDF hanya menampilkan PDF dari lokasi yang diizinkan. Folder WhatsApp (Android/media) bisa dibuka; folder sistem Android lainnya tetap terlindungi.</string>
     <string name="update_available_title">Pembaruan tersedia</string>
     <string name="update_available_message">Mass PDF %1$s sudah siap dipasang. Unduh untuk mendapatkan perbaikan dan fitur terbaru.</string>
     <string name="download">Unduh</string>
@@ -84,7 +84,8 @@
     <string name="sort_largest">Ukuran terbesar</string>
     <string name="all_pdfs_title">Semua PDF</string>
     <string name="all_pdfs_empty">Belum ada PDF yang ditemukan di penyimpanan ini.</string>
-    <string name="android_media_note">Folder WhatsApp (Android/media) bisa dibuka. Folder sistem lain tetap terlindungi.</string>
+    <string name="search_files_no_results">Tidak ada file yang cocok dengan pencarian.</string>
+    <string name="pinned_scroll_hint">Geser untuk melihat lebih banyak</string>
 
     <string name="text_size_title">Ukuran teks</string>
     <string name="text_size_system">Ikuti sistem</string>
