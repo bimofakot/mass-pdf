@@ -5,9 +5,11 @@ import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.util.Locale
 
 data class PdfStorageRoot(val directory: File, val label: String, val isRemovable: Boolean)
 
@@ -19,8 +21,8 @@ data class PdfStorageEntry(
 )
 
 enum class PdfFileSort {
+    LAST_OPENED,
     NAME_ASC,
-    NAME_DESC,
     NEWEST,
     LARGEST,
 }
@@ -46,7 +48,11 @@ class PdfFileRepository(private val context: Context) {
         cachedIndex = null
     }
 
-    fun list(directory: File, sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> {
+    fun list(
+        directory: File,
+        sort: PdfFileSort = PdfFileSort.NAME_ASC,
+        recentUris: List<String> = emptyList(),
+    ): List<PdfStorageEntry> {
         requireStorageAccess()
         requireSafePath(directory)
         if (!directory.isDirectory || !directory.canRead()) {
@@ -69,12 +75,14 @@ class PdfFileRepository(private val context: Context) {
                 add(entry)
             }
         }
-        return sorted(entries, sort)
+        return sorted(entries, sort, recentUris)
     }
 
     /** Semua PDF dari seluruh penyimpanan yang diizinkan, dipakai filter "PDF". */
-    fun allPdfs(sort: PdfFileSort = PdfFileSort.NAME_ASC): List<PdfStorageEntry> =
-        sorted(index().pdfs, sort)
+    fun allPdfs(
+        sort: PdfFileSort = PdfFileSort.NAME_ASC,
+        recentUris: List<String> = emptyList(),
+    ): List<PdfStorageEntry> = sorted(index().pdfs, sort, recentUris)
 
     @Throws(IOException::class, SecurityException::class)
     fun renamePdf(file: File, requestedName: String): File {
@@ -236,12 +244,32 @@ class PdfFileRepository(private val context: Context) {
     private fun sorted(
         entries: List<PdfStorageEntry>,
         sort: PdfFileSort,
+        recentUris: List<String>,
     ): List<PdfStorageEntry> {
+        val nameOrder = compareBy<PdfStorageEntry> { it.file.name.lowercase(Locale.ROOT) }
+            .thenBy { it.file.name }
+            .thenBy { it.file.absolutePath }
         val valueOrder: Comparator<PdfStorageEntry> = when (sort) {
-            PdfFileSort.NAME_ASC -> compareBy { it.file.name.lowercase() }
-            PdfFileSort.NAME_DESC -> compareByDescending { it.file.name.lowercase() }
-            PdfFileSort.NEWEST -> compareByDescending { it.modifiedAt }
-            PdfFileSort.LARGEST -> compareByDescending { it.sizeBytes }
+            PdfFileSort.LAST_OPENED -> {
+                val uriRanks = mutableMapOf<String, Int>()
+                recentUris.forEachIndexed { index, uri -> uriRanks.putIfAbsent(uri, index) }
+                val ranks = entries.associateWith { entry ->
+                    if (entry.isDirectory) {
+                        Int.MAX_VALUE
+                    } else {
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            entry.file,
+                        ).toString()
+                        uriRanks[uri] ?: Int.MAX_VALUE
+                    }
+                }
+                compareBy<PdfStorageEntry> { ranks.getValue(it) }.then(nameOrder)
+            }
+            PdfFileSort.NAME_ASC -> nameOrder
+            PdfFileSort.NEWEST -> compareByDescending<PdfStorageEntry> { it.modifiedAt }.then(nameOrder)
+            PdfFileSort.LARGEST -> compareByDescending<PdfStorageEntry> { it.sizeBytes }.then(nameOrder)
         }
         return entries.sortedWith(compareBy<PdfStorageEntry> { !it.isDirectory }.then(valueOrder))
     }

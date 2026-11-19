@@ -1,11 +1,15 @@
+// Layar riwayat versi: satu kartu per rilis, chip label Baru/Peningkatan/Perbaikan.
+// Aman menambah rilis atau mengganti tag; semua teks berasal dari strings.xml.
+
 package com.massbim.pdf.ui
 
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,34 +17,30 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.massbim.pdf.R
-import kotlinx.coroutines.delay
 
 internal enum class ChangelogTag(@StringRes val labelRes: Int) {
     NEW(R.string.changelog_tag_new),
@@ -60,6 +60,20 @@ internal data class ChangelogRelease(
 )
 
 internal val appChangelog = listOf(
+    ChangelogRelease(
+        version = "0.1.3",
+        date = "19 November 2026",
+        entries = listOf(
+            ChangelogEntry(R.string.changelog_013_1, ChangelogTag.NEW),
+            ChangelogEntry(R.string.changelog_013_2, ChangelogTag.NEW),
+            ChangelogEntry(R.string.changelog_013_3, ChangelogTag.IMPROVED),
+            ChangelogEntry(R.string.changelog_013_4, ChangelogTag.IMPROVED),
+            ChangelogEntry(R.string.changelog_013_5, ChangelogTag.IMPROVED),
+            ChangelogEntry(R.string.changelog_013_6, ChangelogTag.FIXED),
+            ChangelogEntry(R.string.changelog_013_7, ChangelogTag.FIXED),
+            ChangelogEntry(R.string.changelog_013_8, ChangelogTag.IMPROVED),
+        ),
+    ),
     ChangelogRelease(
         version = "0.1.2",
         date = null,
@@ -113,11 +127,10 @@ internal fun ChangelogScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        itemsIndexed(appChangelog, key = { _, release -> release.version }) { index, release ->
+        items(appChangelog, key = { release -> release.version }) { release ->
             ChangelogCard(
                 release = release,
                 isLatest = release.version == appVersion,
-                index = index,
             )
         }
     }
@@ -127,57 +140,71 @@ internal fun ChangelogScreen(
 private fun ChangelogCard(
     release: ChangelogRelease,
     isLatest: Boolean,
-    index: Int,
 ) {
-    var visible by remember(release.version) { mutableStateOf(false) }
-    LaunchedEffect(release.version) {
-        delay(index * 60L)
-        visible = true
-    }
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 5 }),
+    var expanded by rememberSaveable(release.version) { mutableStateOf(isLatest) }
+    ElevatedCard(
+        onClick = { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
     ) {
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        stringResource(R.string.changelog_version, release.version),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (isLatest) {
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                            shape = RoundedCornerShape(50),
-                        ) {
-                            Text(
-                                stringResource(R.string.changelog_latest),
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (release.date != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.changelog_version, release.version),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (isLatest) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(50),
+                    ) {
                         Text(
-                            release.date,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            stringResource(R.string.changelog_latest),
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
                         )
                     }
                 }
-                release.entries.forEach { entry ->
-                    ChangelogRow(entry)
+                Spacer(Modifier.weight(1f))
+                if (release.date != null) {
+                    Text(
+                        release.date,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = stringResource(
+                        if (expanded) R.string.changelog_collapse else R.string.changelog_expand,
+                    ),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!expanded) {
+                Text(
+                    pluralStringResource(R.plurals.changelog_entry_count, release.entries.size, release.entries.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    release.entries.forEach { entry ->
+                        ChangelogRow(entry)
+                    }
                 }
             }
         }
@@ -186,38 +213,30 @@ private fun ChangelogCard(
 
 @Composable
 private fun ChangelogRow(entry: ChangelogEntry) {
-    Row(
+    val scheme = MaterialTheme.colorScheme
+    val (container, onContainer) = when (entry.tag) {
+        ChangelogTag.NEW -> scheme.primaryContainer to scheme.onPrimaryContainer
+        ChangelogTag.IMPROVED -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+        ChangelogTag.FIXED -> scheme.surfaceVariant to scheme.onSurfaceVariant
+    }
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.size(30.dp),
+            shape = RoundedCornerShape(50),
+            color = container,
+            contentColor = onContainer,
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = when (entry.tag) {
-                        ChangelogTag.NEW -> Icons.Filled.AutoAwesome
-                        ChangelogTag.IMPROVED -> Icons.Filled.TrendingUp
-                        ChangelogTag.FIXED -> Icons.Filled.Build
-                    },
-                    contentDescription = stringResource(entry.tag.labelRes),
-                    tint = when (entry.tag) {
-                        ChangelogTag.NEW -> MaterialTheme.colorScheme.primary
-                        ChangelogTag.IMPROVED -> MaterialTheme.colorScheme.tertiary
-                        ChangelogTag.FIXED -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.size(16.dp),
-                )
-            }
+            Text(
+                stringResource(entry.tag.labelRes),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         Text(
             stringResource(entry.textRes),
-            modifier = Modifier
-                .weight(1f)
-                .padding(top = 3.dp),
             style = MaterialTheme.typography.bodyMedium,
         )
     }

@@ -34,7 +34,7 @@ class DocumentRepository(context: Context) {
         recentDocuments().firstOrNull { it.uri == uri.toString() }
 
     fun recordOpened(uri: Uri, title: String): List<RecentPdf> {
-        val updated = (listOf(
+        val updated = LibraryDocuments.retain(listOf(
             RecentPdf(
                 uri = uri.toString(),
                 title = title,
@@ -42,7 +42,6 @@ class DocumentRepository(context: Context) {
                 pinned = find(uri)?.pinned ?: false,
             )
         ) + recentDocuments().filterNot { it.uri == uri.toString() })
-            .take(MAX_RECENTS)
         persist(updated)
         return updated
     }
@@ -56,9 +55,9 @@ class DocumentRepository(context: Context) {
     }
 
     fun setPinned(uri: Uri, pinned: Boolean): List<RecentPdf> {
-        val updated = recentDocuments().map {
+        val updated = LibraryDocuments.retain(recentDocuments().map {
             if (it.uri == uri.toString()) it.copy(pinned = pinned) else it
-        }
+        })
         persist(updated)
         return updated
     }
@@ -99,6 +98,5 @@ class DocumentRepository(context: Context) {
         const val TAG = "DocumentRepository"
         const val PREFERENCES_NAME = "mass_pdf_preferences"
         const val RECENTS_KEY = "recent_documents"
-        const val MAX_RECENTS = 30
     }
 }
